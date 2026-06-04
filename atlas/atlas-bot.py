@@ -45,6 +45,10 @@ from pathlib import Path
 
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from catalogue import Catalogue, ValidationError
+from operations import OPERATIONS
+
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
 # Verrou plus strict que karl-pm (300 s) vu le périmètre sudo. Valeur affinée au
@@ -157,27 +161,50 @@ def delete_message(token, chat_id, message_id):
         pass
 
 
-# ─────────────────────── Point d'extension : exécution ──────────────────────
+# ─────────────────────── Catalogue : liste & exécution ─────────────────────
 
-def dispatch_operation(bot, chat_id, uid, cmd, args):
-    """Point de branchement du catalogue de scripts vetted (RM1816).
+def _trunc(s, n):
+    s = s or ""
+    return s if len(s) <= n else s[: n - 1] + "…"
 
-    À ce stade le catalogue n'existe pas : on répond poliment. Quand RM1816
-    livrera le registre + le runner (validation d'args, exécution via user
-    `atlas` + sudo ciblé, journal d'audit), c'est ici qu'on routera la commande
-    vers l'opération correspondante — JAMAIS vers un shell libre.
-    """
-    send(bot["token"], chat_id,
-         "🛠️ Catalogue d'opérations pas encore branché (RM1816). "
-         "Le squelette sécurisé est en place ; les commandes privilégiées "
-         "arriveront avec le registre de scripts vetted.")
+
+def _safe(token, chat_id, fn):
+    """Exécute fn() et envoie son résultat ; convertit les erreurs en message poli."""
+    try:
+        send(token, chat_id, fn())
+    except Exception as e:
+        send(token, chat_id, f"Erreur : {html.escape(str(e))}")
+
+
+def cmd_ops(cat):
+    """Liste les opérations du catalogue (id, description, palier d'autonomie)."""
+    ops = cat.list()
+    if not ops:
+        return "Aucune opération dans le catalogue."
+    lines = [f"• <code>{html.escape(o.id)}</code> — {html.escape(o.description)} "
+             f"<i>[{o.autonomy}]</i>" for o in ops]
+    return ("<b>Opérations disponibles</b> :\n" + "\n".join(lines)
+            + "\n\nLancer : <code>/run &lt;op&gt; [args…]</code>")
+
+
+def cmd_run(cat, actor, op_id, args):
+    """Valide + exécute une opération du catalogue ; renvoie un message HTML."""
+    try:
+        res = cat.run(op_id, args, actor=actor)
+    except ValidationError as e:
+        return f"❌ {html.escape(str(e))}"
+    head = "✅" if res.ok else f"⚠️ (exit {res.exit_code})"
+    out = _trunc((res.stdout or res.stderr or "").rstrip(), 3500)
+    body = f"\n<pre>{html.escape(out)}</pre>" if out else ""
+    return f"{head} <b>{html.escape(op_id)}</b> — {res.duration_ms} ms{body}"
 
 
 # ────────────────────────────────── Handler ─────────────────────────────────
 
 HELP = ("<b>Atlas</b> — bot sysadmin sécurisé. Commandes :\n"
         "/status — état du bot\n"
-        "/ops — opérations du catalogue (à venir, RM1816)\n"
+        "/ops — liste des opérations du catalogue\n"
+        "/run &lt;op&gt; [args…] — exécute une opération\n"
         "/lock — verrouiller\n"
         "/unlock &lt;mdp&gt; — déverrouiller\n"
         "/whoami — ton ID Telegram\n"
@@ -270,11 +297,20 @@ def handle(bot, msg):
                              f"• Uptime : {up}\n"
                              f"• Verrou : {verrou}\n"
                              f"• Auto-lock : {AUTO_LOCK_SECONDS} s\n"
-                             f"• Catalogue : non branché (RM1816)")
+                             f"• Catalogue : {len(bot['cat'].list())} opération(s)")
         return
 
     if cmd == "/ops":
-        dispatch_operation(bot, chat_id, uid, cmd, parts[1:])
+        send(token, chat_id, cmd_ops(bot["cat"]))
+        return
+
+    if cmd == "/run":
+        if len(parts) < 2:
+            send(token, chat_id, "Usage : <code>/run &lt;op&gt; [args…]</code>. "
+                                 "Liste : /ops")
+            return
+        actor = f"telegram:{uid}"
+        _safe(token, chat_id, lambda: cmd_run(bot["cat"], actor, parts[1], parts[2:]))
         return
 
     send(token, chat_id, "Commande inconnue. /help pour la liste.")
@@ -318,8 +354,9 @@ def main():
     wl_raw = os.environ.get("ATLAS_WHITELIST", "")
     whitelist = {int(x) for x in wl_raw.replace(" ", "").split(",") if x.strip().isdigit()}
     lock = Lock(os.environ.get("ATLAS_LOCK_PASSWORD_HASH"))
+    cat = Catalogue(OPERATIONS)
 
-    bot = {"token": token, "whitelist": whitelist, "lock": lock,
+    bot = {"token": token, "whitelist": whitelist, "lock": lock, "cat": cat,
            "start": time.time(), "version": VERSION}
 
     me = tg(token, "getMe")["result"]
@@ -331,7 +368,7 @@ def main():
     else:
         print("  Verrou : DÉSACTIVÉ — configure ATLAS_LOCK_PASSWORD_HASH "
               "(python3 atlas-bot.py --hash-password)")
-    print("  Catalogue : non branché (RM1816)")
+    print(f"  Catalogue : {len(cat.list())} opération(s) — {', '.join(o.id for o in cat.list())}")
     print("  Long-polling… (Ctrl-C pour arrêter)")
 
     offset = None

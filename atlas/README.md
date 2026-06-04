@@ -6,13 +6,30 @@ forte (whitelist + verrou applicatif TTL). Voir RM1812 (épic) et ses sous-ticke
 ## État
 
 - **RM1814 — squelette bot** (`atlas-bot.py`) : long-polling, whitelist, verrou
-  PBKDF2 TTL, anti-brute-force, fail-secure. **Sans exécution privilégiée** —
-  point d'extension `dispatch_operation()` prêt pour le catalogue.
-- **RM1816 — catalogue de scripts vetted** : registre + validation d'args +
-  exécution via user `atlas` + sudo ciblé + journal d'audit *(à venir)*.
+  PBKDF2 TTL, anti-brute-force, fail-secure. Branché sur le catalogue (`/ops`, `/run`).
+- **RM1816 — catalogue de scripts vetted** (`catalogue.py` + `operations.py` +
+  `ops/`) : registre déclaratif, validation stricte des arguments (liste
+  blanche / motif / bornes, anti-injection), exécution en argv (jamais de shell),
+  journal d'audit JSONL. Auto-tests : `python3 test_catalogue.py`.
 - **RM1815 — provisioning** du user `atlas` + sudoers + clé SSH sur le parc, via
   `provision-atlas.sh` (script idempotent ; l'outil de config management —
   Puppet/Ansible/alt. — est arbitré dans RM1118).
+
+## Catalogue d'opérations
+
+Une opération = un script vetted dans `ops/` + une entrée déclarative dans
+`operations.py` (id, description, schéma d'arguments, palier d'autonomie, cible,
+réversibilité, `needs_sudo`). Le framework (`catalogue.py`) **valide chaque
+argument avant exécution** et **n'interpole jamais** dans un shell.
+
+```bash
+python3 test_catalogue.py          # auto-tests (validation, anti-injection, audit)
+```
+
+Opérations de référence (read-only, palier P0) : `disk-usage`, `service-status`.
+Les opérations privilégiées (restart FPM, snapshot ZFS, restart LXC, limite RAM…)
+sont ajoutées par **RM1817**, une à une, chacune avec sa ligne sudoers ciblée.
+Audit : `scripts/atlas/data/audit.jsonl` (gitignoré ; `$ATLAS_AUDIT_PATH` pour surcharger).
 
 ## Démarrer le bot (dev)
 
