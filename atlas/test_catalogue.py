@@ -56,5 +56,40 @@ res = cat.run("disk-usage", actor="test")
 check("disk-usage s'exécute (read-only)", res.ok and res.exit_code == 0)
 check("audit JSONL écrit", audit.exists() and audit.read_text(encoding="utf-8").strip() != "")
 
+print("— Registre v1 privilégié (RM1817) —")
+ops = {o.id: o for o in OPERATIONS}
+check("restart-service privilégié (needs_sudo)", ops["restart-service"].needs_sudo)
+check("zfs-snapshot palier P1", ops["zfs-snapshot"].autonomy == "P1")
+expect_reject("restart-service rejette une injection",
+              lambda: ops["restart-service"].validate_args(["a;b"]))
+check("zfs-snapshot accepte dataset + label",
+      ops["zfs-snapshot"].validate_args(["zfs/lxc/sandbox", "pre"]) == ["zfs/lxc/sandbox", "pre"])
+check("zfs-snapshot label optionnel",
+      ops["zfs-snapshot"].validate_args(["zfs/lxc/sandbox"]) == ["zfs/lxc/sandbox"])
+expect_reject("zfs-snapshot rejette '@' dans le dataset",
+              lambda: ops["zfs-snapshot"].validate_args(["zfs/lxc/sandbox@x"]))
+expect_reject("restart-lxc rejette un nom invalide",
+              lambda: ops["restart-lxc"].validate_args(["../etc"]))
+check("tail-log accepte un log listé + nb lignes",
+      ops["tail-log"].validate_args(["syslog", "100"]) == ["syslog", "100"])
+expect_reject("tail-log rejette un log hors liste blanche",
+              lambda: ops["tail-log"].validate_args(["/etc/shadow"]))
+expect_reject("tail-log rejette lines hors borne",
+              lambda: ops["tail-log"].validate_args(["syslog", "9999"]))
+
+print("— Génération du sudoers —")
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "gen_sudoers", Path(__file__).resolve().parent / "gen-sudoers.py")
+gs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gs)
+sudoers = gs.render()
+n_priv = sum(1 for o in OPERATIONS if o.needs_sudo)
+check("sudoers : une ligne NOPASSWD par op privilégiée",
+      sum(1 for ln in sudoers.splitlines() if "NOPASSWD" in ln) == n_priv)
+check("sudoers : aucune op read-only (disk-usage absent)", "disk-usage.sh" not in sudoers)
+check("sudoers : chemin prod /opt/atlas/ops",
+      "/opt/atlas/ops/restart-service.sh" in sudoers)
+
 print("ÉCHEC" if FAILED else "TOUS LES TESTS PASSENT")
 sys.exit(1 if FAILED else 0)

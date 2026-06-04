@@ -27,7 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-OPS_DIR = BASE_DIR / "ops"
+# Dossier des scripts d'opérations. En dev = ops/ du repo ; sur un nœud déployé,
+# pointer vers /opt/atlas/ops via ATLAS_OPS_DIR.
+OPS_DIR = Path(os.environ.get("ATLAS_OPS_DIR", str(BASE_DIR / "ops")))
 DEFAULT_AUDIT_PATH = Path(os.environ.get("ATLAS_AUDIT_PATH",
                                          str(BASE_DIR / "data" / "audit.jsonl")))
 DEFAULT_TIMEOUT = 60  # secondes
@@ -35,8 +37,10 @@ DEFAULT_TIMEOUT = 60  # secondes
 AUTONOMY_TIERS = ("P0", "P1", "P2", "never")  # cf. RM1813
 
 # Motifs sûrs réutilisables (aucun métacaractère shell, longueur bornée).
-RE_SERVICE = re.compile(r"^[A-Za-z0-9@._-]{1,64}$")       # unité systemd / pool FPM
-RE_CONTAINER = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")  # nom de conteneur LXC
+RE_SERVICE = re.compile(r"^[A-Za-z0-9@._-]{1,64}$")          # unité systemd / pool FPM
+RE_CONTAINER = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")     # nom de conteneur LXC
+RE_ZFS_DATASET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,80}$")  # dataset (sans @)
+RE_LABEL = re.compile(r"^[A-Za-z0-9_-]{1,32}$")             # libellé de snapshot
 
 
 class ValidationError(ValueError):

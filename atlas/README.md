@@ -26,10 +26,32 @@ argument avant exécution** et **n'interpole jamais** dans un shell.
 python3 test_catalogue.py          # auto-tests (validation, anti-injection, audit)
 ```
 
-Opérations de référence (read-only, palier P0) : `disk-usage`, `service-status`.
-Les opérations privilégiées (restart FPM, snapshot ZFS, restart LXC, limite RAM…)
-sont ajoutées par **RM1817**, une à une, chacune avec sa ligne sudoers ciblée.
-Audit : `scripts/atlas/data/audit.jsonl` (gitignoré ; `$ATLAS_AUDIT_PATH` pour surcharger).
+**Opérations disponibles**
+
+| id | palier | sudo | description |
+|----|--------|------|-------------|
+| `disk-usage` | P0 | non | `df -h` (réf. RM1816) |
+| `service-status` | P0 | non | état d'un service systemd (réf. RM1816) |
+| `tail-log` | P0 | oui | fin d'un log système (liste blanche) |
+| `zfs-snapshot` | P1 | oui | snapshot ZFS d'un dataset (rollback) |
+| `restart-service` | P2 | oui | redémarre un service / pool FPM |
+| `restart-lxc` | P2 | oui | redémarre un conteneur LXC (via opensvc) |
+
+Les opérations privilégiées (`needs_sudo`) tournent via le user `atlas` avec une
+ligne sudoers **ciblée par script**, **générée depuis le registre** (jamais à la
+main) :
+
+```bash
+python3 gen-sudoers.py            # → /etc/sudoers.d/atlas (depuis operations.py)
+./deploy-atlas.sh <ssh-node>      # déploie ops/ → /opt/atlas/ops + installe le sudoers (visudo -c)
+```
+
+Sur un nœud déployé, pointer le catalogue vers les scripts installés via
+`ATLAS_OPS_DIR=/opt/atlas/ops`. Audit : `scripts/atlas/data/audit.jsonl`
+(gitignoré ; `$ATLAS_AUDIT_PATH` pour surcharger).
+
+> À venir : `set-lxc-ram` (lié à la limite RAM RM1797, mécanisme cgroup/lxcfs à
+> stabiliser) ; exécution **distante** des ops via dispatcher SSH (RM1813).
 
 ## Démarrer le bot (dev)
 
