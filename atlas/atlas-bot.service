@@ -1,0 +1,35 @@
+[Unit]
+# Atlas — bot Telegram sysadmin sécurisé (épic RM1812, déploiement RM1848).
+# Déployé dans le conteneur `atlas` sous l'utilisateur dédié non privilégié `atlas-bot`.
+Description=Atlas — bot Telegram sysadmin sécurisé
+Documentation=https://gitlab.example.net/iprospective/sysadmin/infrastructure
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas-bot
+Group=atlas-bot
+WorkingDirectory=/opt/atlas
+# Token / whitelist / hash mdp — fichier 0600 hors versionning, rempli sur le conteneur.
+EnvironmentFile=/opt/atlas/.env
+ExecStart=/usr/bin/python3 -u /opt/atlas/atlas-bot.py
+Restart=on-failure
+RestartSec=5
+
+# ── Durcissement (socle ; durcissement agressif = RM1818, avec tests) ──
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Le bot n'écrit QUE son journal d'audit JSONL.
+ReadWritePaths=/opt/atlas/data
+
+[Install]
+WantedBy=multi-user.target
