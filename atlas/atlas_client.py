@@ -63,3 +63,8 @@ def submit_resolve(token, approved, *, actor="?", timeout=90):
     """Résout une approbation P2 en attente (RM1813 #6) : exécute si approuvé."""
     return _request({"kind": "resolve", "actor": actor,
                      "token": token, "approved": bool(approved)}, timeout)
+
+
+def submit_poll(maxn=50, *, actor="?", timeout=15):
+    """Tire les notifications du cœur en attente (alertes + approbations P2)."""
+    return _request({"kind": "poll", "actor": actor, "max": maxn}, timeout)

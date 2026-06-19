@@ -54,6 +54,8 @@ CAT = Catalogue(OPERATIONS)
 ENGINE = DecisionEngine(POLICY)
 _LOCK = threading.Lock()          # sérialise tout le chemin événement/décision
 _PENDING = {}                     # token → {"decision": Decision, "ts": float}
+_NOTIFS = []                      # file de notifications à tirer par une interface
+NOTIF_MAX = 200                   # plafond anti-emballement (on jette les plus vieilles)
 
 
 # ── État du moteur : persistance (survie au redémarrage) ─────────────────────
@@ -86,6 +88,26 @@ def _log_decision(d, extra=None):
     DECISIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
     with DECISIONS_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def _enqueue_notif(d, token=None, extra=None):
+    """Empile une notification structurée à tirer par le bot (Telegram).
+
+    Le cœur ne connaît pas Telegram : il publie des champs neutres ; l'interface
+    formate + poste (boutons pour `approve`). Appelé sous `_LOCK`.
+    """
+    n = {
+        "action": d.action, "tier": d.tier, "reason": d.reason,
+        "host": d.event.host, "trigger": d.event.trigger,
+        "severity": d.event.severity, "state": d.event.state,
+        "op": d.op, "args": d.args, "token": token,
+        "ts": time.time(),
+    }
+    if extra:
+        n.update(extra)
+    _NOTIFS.append(n)
+    if len(_NOTIFS) > NOTIF_MAX:
+        del _NOTIFS[: len(_NOTIFS) - NOTIF_MAX]
 
 
 def _new_token():
@@ -161,14 +183,19 @@ def handle_event(req, uid):
             _save_state()
             out["result"] = run
             _log_decision(d, {"executed": True, "exit": run.get("exit")})
+            _enqueue_notif(d, extra={"exit": run.get("exit"), "ok": run.get("ok")})
         elif d.action == "approve":
             tok = _new_token()
             _PENDING[tok] = {"decision": d, "ts": time.time()}
             out["token"] = tok
             out["ttl"] = APPROVAL_TTL
             _log_decision(d, {"pending_token": tok})
-        else:  # notify | suppress | escalate
+            _enqueue_notif(d, token=tok)
+        elif d.action == "suppress":
+            _log_decision(d)        # anti-flap/dédup : tracé, pas notifié (anti-bruit)
+        else:                       # notify | escalate
             _log_decision(d)
+            _enqueue_notif(d)
     return out
 
 
@@ -194,7 +221,20 @@ def handle_resolve(req, uid):
                 "op": d.op, "args": d.args, "result": run}
 
 
-HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve}
+def handle_poll(req, uid):
+    """Tire (et draine) les notifications en attente — appelé par le bot (RM1813)."""
+    try:
+        maxn = min(int(req.get("max", 50)), NOTIF_MAX)
+    except (TypeError, ValueError):
+        maxn = 50
+    with _LOCK:
+        batch = _NOTIFS[:maxn]
+        del _NOTIFS[:maxn]
+    return {"ok": True, "notifs": batch}
+
+
+HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve,
+            "poll": handle_poll}
 
 
 def handle(conn):

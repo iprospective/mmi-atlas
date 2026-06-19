@@ -118,5 +118,39 @@ check("op directe disk-usage toujours OK", r.get("ok") and r["stdout"] == "FAKE-
 check("type de message inconnu rejeté",
       core.HANDLERS.get("bogus") is None)
 
+print("— cœur : file de notifications (poll) —")
+core.handle_poll({}, UID)  # draine tout l'historique des tests précédents
+# execute → notif ; suppress → pas de notif ; notify → notif
+core.handle_event(event("PHP FPM pool down", host="zz"), UID)       # execute → notif
+core.handle_event(event("PHP FPM pool down", host="zz"), UID)       # suppress (cooldown)
+core.handle_event(event("disk 99% used", host="zz", sev="average"), UID)  # notify
+batch = core.handle_poll({}, UID)["notifs"]
+actions = [n["action"] for n in batch]
+check("poll : execute + notify empilés, suppress absent",
+      "execute" in actions and "notify" in actions and "suppress" not in actions)
+check("poll : draine la file (2e poll vide)", core.handle_poll({}, UID)["notifs"] == [])
+core.handle_event(event("LXC container down", host="qq"), UID)      # approve → notif+token
+napp = core.handle_poll({}, UID)["notifs"]
+check("poll : approbation P2 → notif avec token",
+      any(n["action"] == "approve" and n.get("token") for n in napp))
+
+print("— atlas-bot : formatage des notifications —")
+bot = load("atlas_bot", "atlas-bot.py")
+txt, kbd = bot.format_notif({"action": "approve", "tier": "P2", "host": "mmi",
+                             "trigger": "LXC down", "severity": "high", "state": "PROBLEM",
+                             "reason": "approbation requise", "op": "restart-lxc",
+                             "args": ["mmi"], "token": "abcd1234"})
+check("approve : clavier inline à 2 boutons", kbd and len(kbd[0]) == 2)
+check("approve : callback_data porte le token",
+      kbd[0][0]["callback_data"] == "a:ok:abcd1234" and kbd[0][1]["callback_data"] == "a:no:abcd1234")
+txt2, kbd2 = bot.format_notif({"action": "execute", "tier": "P1", "host": "web1",
+                               "trigger": "FPM down", "severity": "high", "state": "PROBLEM",
+                               "reason": "auto", "op": "restart-service", "args": ["x"],
+                               "ok": True, "exit": 0})
+check("execute : pas de clavier", kbd2 is None and "réussie" in txt2)
+txt3, kbd3 = bot.format_notif({"action": "notify", "tier": "P0", "host": "h", "trigger": "t",
+                               "severity": "average", "state": "OK", "reason": "résolution"})
+check("résolution OK : icône ✅, pas de clavier", kbd3 is None and txt3.startswith("✅"))
+
 print("ÉCHEC" if FAILED else "TOUS LES TESTS PASSENT")
 sys.exit(1 if FAILED else 0)
