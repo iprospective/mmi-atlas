@@ -64,7 +64,8 @@ visudo -cf /tmp/atlas-core.sudoers >/dev/null
 install -m 0440 -o root -g root /tmp/atlas-core.sudoers /etc/sudoers.d/atlas && rm -f /tmp/atlas-core.sudoers
 rm -f /etc/sudoers.d/atlas-bot
 systemctl daemon-reload
-systemctl enable --now atlas-core.service >/dev/null 2>&1 || true
+systemctl enable atlas-core.service >/dev/null 2>&1 || true
+systemctl restart atlas-core.service   # restart (pas enable --now) : recharge le code même si déjà actif
 echo "  ✓ core: $(systemctl is-active atlas-core) ; socket: $(ls -la /run/atlas/atlas.sock 2>/dev/null | awk '{print $1,$3,$4}')"
 echo "  ✓ sudo atlas (cœur): $(sudo -l -U atlas 2>/dev/null | grep -c NOPASSWD) ops ; atlas-bot: $(sudo -l -U atlas-bot 2>/dev/null | grep -c NOPASSWD) (doit être 0)"
 SH
