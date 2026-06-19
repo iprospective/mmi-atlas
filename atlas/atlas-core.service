@@ -1,0 +1,32 @@
+[Unit]
+# Atlas — le CŒUR (RM2039). Tourne sous le user dédié `atlas`, porte le catalogue +
+# le sudoers local + l'audit, et écoute le socket /run/atlas/atlas.sock.
+Description=Atlas — cœur (catalogue + socket local)
+After=network.target
+
+[Service]
+Type=simple
+User=atlas
+# Group des interfaces : /run/atlas et le socket sont group=atlas-ifaces → les
+# interfaces (atlas-bot/www/cli, membres d'atlas-ifaces) peuvent se connecter.
+Group=atlas-ifaces
+RuntimeDirectory=atlas
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 -u /opt/atlas/atlas-core.py
+Restart=on-failure
+RestartSec=3
+Environment=ATLAS_SOCKET=/run/atlas/atlas.sock
+Environment=ATLAS_SOCKET_GROUP=atlas-ifaces
+Environment=ATLAS_AUDIT_PATH=/opt/atlas/data/audit.jsonl
+
+# ── Durcissement ──
+# ⚠ PAS de NoNewPrivileges : le cœur DOIT pouvoir `sudo -n` les ops privilégiées.
+# (C'est précisément pourquoi le cœur est isolé et NON exposé ; les interfaces, elles,
+#  tournent en NoNewPrivileges=true.)
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/atlas/data /run/atlas
+
+[Install]
+WantedBy=multi-user.target
