@@ -11,12 +11,17 @@ deploy-atlas.sh, après `visudo -c`).
 
     python3 gen-sudoers.py            # → /etc/sudoers.d/atlas
 """
+import importlib
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from operations import OPERATIONS
+
+# Module de registre (paramétrable) : `operations` pour le cœur, `operations_safe`
+# pour atlas-safe (RM2050). Même outil, deux jeux d'ops.
+OPS_MODULE = os.environ.get("ATLAS_OPS_MODULE", "operations")
+OPERATIONS = importlib.import_module(OPS_MODULE).OPERATIONS
 
 PROD_OPS_DIR = os.environ.get("ATLAS_PROD_OPS_DIR", "/opt/atlas/ops")
 USER = os.environ.get("ATLAS_USER", "atlas")
