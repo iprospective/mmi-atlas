@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # noqa: E402
 from operations import OPERATIONS                  # noqa: E402
 from decision import DecisionEngine, Event         # noqa: E402
-from policy import POLICY                          # noqa: E402
+from policy import POLICY, DEFAULT_DIAGNOSE         # noqa: E402
 
 SOCKET_PATH = os.environ.get("ATLAS_SOCKET", "/run/atlas/atlas.sock")
 SOCKET_GROUP = os.environ.get("ATLAS_SOCKET_GROUP", "atlas-ifaces")
@@ -48,10 +48,15 @@ DATA_DIR = Path(os.environ.get("ATLAS_DATA_DIR", str(Path(__file__).resolve().pa
 STATE_PATH = Path(os.environ.get("ATLAS_DECISION_STATE", str(DATA_DIR / "decision-state.json")))
 DECISIONS_LOG = Path(os.environ.get("ATLAS_DECISIONS_LOG", str(DATA_DIR / "decisions.jsonl")))
 APPROVAL_TTL = int(os.environ.get("ATLAS_APPROVAL_TTL", "600"))  # s avant péremption d'un P2
+# Plafond d'autonomie : ce qu'Atlas a le DROIT de faire. Défaut « observe » =
+# diagnostic + alerte seulement, aucune remédiation (cf. decision.CEILINGS).
+CEILING = os.environ.get("ATLAS_AUTONOMY_CEILING", "observe")
+# Diagnostic automatique sur PROBLEM (read-only) — actif par défaut.
+DIAGNOSE_ON = os.environ.get("ATLAS_DIAGNOSE", "1") not in ("0", "false", "no", "")
 MAX_REQ = 64 * 1024
 
 CAT = Catalogue(OPERATIONS)
-ENGINE = DecisionEngine(POLICY)
+ENGINE = DecisionEngine(POLICY, ceiling=CEILING, default_diagnose=DEFAULT_DIAGNOSE)
 _LOCK = threading.Lock()          # sérialise tout le chemin événement/décision
 _PENDING = {}                     # token → {"decision": Decision, "ts": float}
 _NOTIFS = []                      # file de notifications à tirer par une interface
@@ -90,7 +95,7 @@ def _log_decision(d, extra=None):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def _enqueue_notif(d, token=None, extra=None):
+def _enqueue_notif(d, token=None, diagnosis=None, extra=None):
     """Empile une notification structurée à tirer par le bot (Telegram).
 
     Le cœur ne connaît pas Telegram : il publie des champs neutres ; l'interface
@@ -101,6 +106,8 @@ def _enqueue_notif(d, token=None, extra=None):
         "host": d.event.host, "trigger": d.event.trigger,
         "severity": d.event.severity, "state": d.event.state,
         "op": d.op, "args": d.args, "token": token,
+        "held": d.held, "proposed": d.proposed,
+        "diagnosis": diagnosis or [],
         "ts": time.time(),
     }
     if extra:
@@ -145,6 +152,37 @@ def _run_op(op, args, actor, node=None):
     }
 
 
+def _run_diagnostics(plan, actor):
+    """Exécute le plan de diagnostic — **read-only only** (ops palier P0).
+
+    Garde-fou : une op de diagnostic dont le palier n'est pas P0 est refusée (on
+    ne « diagnostique » jamais avec une op qui modifie l'état). Tolère les erreurs
+    (un diagnostic qui échoue ne bloque pas l'alerte).
+    """
+    out = []
+    if not DIAGNOSE_ON:
+        return out
+    for step in plan:
+        op = step.get("op")
+        args = step.get("args", [])
+        try:
+            opobj = CAT.get(op)
+        except ValidationError:
+            out.append({"op": op, "ok": False, "output": "op inconnue"})
+            continue
+        if getattr(opobj, "autonomy", None) != "P0":
+            out.append({"op": op, "ok": False,
+                        "output": f"refusé : « {op} » non read-only (palier {opobj.autonomy})"})
+            continue
+        try:
+            r = _run_op(op, args, actor=f"diagnose ({actor})")
+            out.append({"op": op, "ok": r["ok"],
+                        "output": (r["stdout"] or r["stderr"] or "").rstrip()})
+        except (ValidationError, Exception) as e:  # noqa: BLE001
+            out.append({"op": op, "ok": False, "output": f"erreur : {e}"})
+    return out
+
+
 # ── Handlers par type de message ─────────────────────────────────────────────
 
 def handle_op(req, uid):
@@ -174,8 +212,12 @@ def handle_event(req, uid):
     with _LOCK:
         _prune_pending()
         d = ENGINE.decide(ev)
+        # Diagnostic read-only (sauf sur suppress : anti-bruit) — « poser un diagnostic ».
+        diag = ([] if d.action == "suppress"
+                else _run_diagnostics(d.diagnose, actor=f"event:{ev.host}"))
         out = {"ok": True, "action": d.action, "tier": d.tier, "reason": d.reason,
-               "host": ev.host, "trigger": ev.trigger, "op": d.op, "args": d.args}
+               "host": ev.host, "trigger": ev.trigger, "op": d.op, "args": d.args,
+               "held": d.held, "proposed": d.proposed, "diagnosis": diag}
 
         if d.action == "execute":
             run = _run_op(d.op, d.args, actor=f"decision:{d.rule.id} ({actor})")
@@ -183,19 +225,19 @@ def handle_event(req, uid):
             _save_state()
             out["result"] = run
             _log_decision(d, {"executed": True, "exit": run.get("exit")})
-            _enqueue_notif(d, extra={"exit": run.get("exit"), "ok": run.get("ok")})
+            _enqueue_notif(d, diagnosis=diag, extra={"exit": run.get("exit"), "ok": run.get("ok")})
         elif d.action == "approve":
             tok = _new_token()
             _PENDING[tok] = {"decision": d, "ts": time.time()}
             out["token"] = tok
             out["ttl"] = APPROVAL_TTL
             _log_decision(d, {"pending_token": tok})
-            _enqueue_notif(d, token=tok)
+            _enqueue_notif(d, token=tok, diagnosis=diag)
         elif d.action == "suppress":
             _log_decision(d)        # anti-flap/dédup : tracé, pas notifié (anti-bruit)
         else:                       # notify | escalate
             _log_decision(d)
-            _enqueue_notif(d)
+            _enqueue_notif(d, diagnosis=diag)
     return out
 
 
@@ -233,8 +275,18 @@ def handle_poll(req, uid):
     return {"ok": True, "notifs": batch}
 
 
+def handle_status(req, uid):
+    """État du moteur : plafond d'autonomie, diagnostic, compteurs (RM1813)."""
+    with _LOCK:
+        pending = len(_PENDING)
+        queued = len(_NOTIFS)
+    return {"ok": True, "ceiling": ENGINE.ceiling, "diagnose": DIAGNOSE_ON,
+            "rules": len(POLICY), "ops": len(OPERATIONS),
+            "pending": pending, "queued": queued, "approval_ttl": APPROVAL_TTL}
+
+
 HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve,
-            "poll": handle_poll}
+            "poll": handle_poll, "status": handle_status}
 
 
 def handle(conn):
@@ -286,6 +338,7 @@ def main():
     os.chmod(str(sp), 0o660)
     srv.listen(16)
     print(f"atlas-core: écoute {sp} ({len(OPERATIONS)} ops, {len(POLICY)} règles, "
+          f"plafond={ENGINE.ceiling}, diagnostic={'on' if DIAGNOSE_ON else 'off'}, "
           f"groupe {SOCKET_GROUP})", flush=True)
     while True:
         conn, _ = srv.accept()

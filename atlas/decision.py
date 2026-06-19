@@ -48,6 +48,16 @@ TIERS = ("P0", "P1", "P2", "never")
 ACTIONS = ("notify", "execute", "approve", "suppress", "escalate")
 WINDOW_S = 3600  # fenêtre glissante des garde-fous (1 h)
 
+# Plafond d'autonomie global — borne ce qu'Atlas a le droit de FAIRE, quel que
+# soit le palier de la règle. Sécurité : défaut **observe** = diagnostic + alerte
+# seulement, aucune action. On relève le plafond explicitement quand on fait
+# confiance (« définir ce que peut faire Atlas »).
+#   observe  : aucune action       — P1/P2 ramenés à `notify` (+ diagnostic).
+#   approve  : approbation humaine  — P1 ramené à `approve` ; P2 inchangé.
+#   execute  : autonomie pleine     — P1 `execute`, P2 `approve`.
+CEILINGS = ("observe", "approve", "execute")
+CEILING_RANK = {"observe": 0, "approve": 1, "execute": 2}
+
 
 def _severity_level(name: str) -> int:
     """Poids d'une sévérité (insensible à la casse) ; inconnu → 0."""
@@ -98,6 +108,8 @@ class Rule:
     min_severity: str = "not_classified"  # n'applique la règle qu'au-delà de ce seuil
     max_per_hour: int = 3                 # rate-limit par règle
     cooldown_s: int = 300                 # délai mini entre 2 actions d'un même épisode
+    diagnose: tuple = ()                  # ops read-only à lancer en plus du défaut
+                                          #   ((op_id, (argtmpl…)), …) — {host}/{item}
 
     def __post_init__(self):
         if self.tier not in TIERS:
@@ -132,6 +144,9 @@ class Decision:
     rule: Optional[Rule] = None
     op: Optional[str] = None
     args: list = field(default_factory=list)
+    proposed: Optional[str] = None   # action initiale si bridée par le plafond
+    held: bool = False               # True si le plafond a retenu l'action
+    diagnose: list = field(default_factory=list)  # [{"op":…, "args":[…]}] read-only
 
     @property
     def actionable(self) -> bool:
@@ -154,10 +169,15 @@ class DecisionEngine:
     """Applique la politique + les garde-fous. Pur (pas d'I/O)."""
 
     def __init__(self, rules, *, now: Callable[[], float] = time.time,
-                 breaker_max_per_hour: int = 10):
+                 breaker_max_per_hour: int = 10, ceiling: str = "observe",
+                 default_diagnose=()):
         self.rules = list(rules)
         self._now = now
         self.breaker_max = breaker_max_per_hour
+        if ceiling not in CEILINGS:
+            raise ValueError(f"plafond d'autonomie invalide : {ceiling!r}")
+        self.ceiling = ceiling
+        self.default_diagnose = tuple(default_diagnose)
         self._episodes: dict[str, _Episode] = {}
         self._actions_by_rule: dict[str, list] = {}   # rule_id → [ts, …]
 
@@ -180,6 +200,46 @@ class DecisionEngine:
     def _global_count(self) -> int:
         return sum(len(v) for v in self._actions_by_rule.values())
 
+    # -- plafond d'autonomie & diagnostic ------------------------------------
+    def _cap(self, action):
+        """Applique le plafond. Retourne (action_finale, retenue?)."""
+        if action not in ("execute", "approve"):
+            return action, False
+        rank = CEILING_RANK[self.ceiling]
+        if action == "execute":
+            if rank >= 2:
+                return "execute", False
+            return ("approve", True) if rank == 1 else ("notify", True)
+        # approve
+        return ("approve", False) if rank >= 1 else ("notify", True)
+
+    def _diagnose_plan(self, ev: Event, rule):
+        specs = list(self.default_diagnose)
+        if rule and rule.diagnose:
+            specs += list(rule.diagnose)
+        plan, seen = [], set()
+        for op, argtmpl in specs:
+            rendered = [str(a).format(host=ev.host, item=ev.item) for a in argtmpl]
+            key = (op, tuple(rendered))
+            if key not in seen:
+                seen.add(key)
+                plan.append({"op": op, "args": rendered})
+        return plan
+
+    def _mk(self, action, tier, reason, ev, rule, op=None, args=None):
+        """Construit la décision : attache le diagnostic + applique le plafond."""
+        diagnose = self._diagnose_plan(ev, rule) if ev.is_problem else []
+        final, held = self._cap(action)
+        proposed = action if held else None
+        if held:
+            if final == "notify":
+                reason += (f" — plafond « {self.ceiling} » : action {tier} retenue "
+                           "(diagnostic + alerte seulement)")
+            else:
+                reason += f" — plafond « {self.ceiling} » : ramené à approbation"
+        return Decision(final, tier, reason, ev, rule, op, args or [],
+                        proposed=proposed, held=held, diagnose=diagnose)
+
     # -- décision -------------------------------------------------------------
     def decide(self, ev: Event) -> Decision:
         ts = ev.ts or self._now()
@@ -193,43 +253,41 @@ class DecisionEngine:
             ep.open_since = None
             ep.last_action_ts = None
             ep.acted_count = 0
-            return Decision("notify", tier, "résolution (OK) — épisode refermé",
-                            ev, rule)
+            return self._mk("notify", tier, "résolution (OK) — épisode refermé", ev, rule)
 
         # PROBLEM : ouvrir l'épisode si nécessaire.
         if ep.open_since is None:
             ep.open_since = ts
 
-        # Paliers non-actionnables → notify.
+        # Paliers non-actionnables → notify (+ diagnostic).
         if rule is None:
-            return Decision("notify", "P0", "aucune règle — notify par défaut", ev)
+            return self._mk("notify", "P0", "aucune règle — notify par défaut", ev, None)
         if tier == "P0":
-            return Decision("notify", "P0", f"règle {rule.id} : notify only", ev, rule)
+            return self._mk("notify", "P0", f"règle {rule.id} : notify only", ev, rule)
         if tier == "never":
-            return Decision("notify", "never",
+            return self._mk("notify", "never",
                             f"règle {rule.id} : action interdite (never)", ev, rule)
 
-        # Actionnable (P1/P2) → garde-fous.
+        # Actionnable (P1/P2) → garde-fous, PUIS plafond (dans _mk).
         op, args = rule.op, rule.render_args(ev)
 
         if self._global_count() >= self.breaker_max:
-            return Decision("escalate", tier,
+            return self._mk("escalate", tier,
                             f"circuit-breaker : ≥{self.breaker_max} actions/h — "
                             "escalade humaine", ev, rule, op, args)
         if self._rule_count(rule.id) >= rule.max_per_hour:
-            return Decision("escalate", tier,
+            return self._mk("escalate", tier,
                             f"rate-limit règle {rule.id} : ≥{rule.max_per_hour}/h — "
                             "escalade humaine", ev, rule, op, args)
         if ep.last_action_ts is not None and (ts - ep.last_action_ts) < rule.cooldown_s:
-            return Decision("suppress", tier,
+            return self._mk("suppress", tier,
                             f"anti-flap : action <{rule.cooldown_s}s sur l'épisode "
                             "(en attente de résolution)", ev, rule, op, args)
 
         if tier == "P1":
-            return Decision("execute", "P1",
+            return self._mk("execute", "P1",
                             f"règle {rule.id} : auto-remédiation P1", ev, rule, op, args)
-        # P2
-        return Decision("approve", "P2",
+        return self._mk("approve", "P2",
                         f"règle {rule.id} : approbation humaine requise", ev, rule, op, args)
 
     # -- validation (l'action a réellement eu lieu) --------------------------

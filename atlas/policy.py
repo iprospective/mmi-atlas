@@ -15,6 +15,14 @@ en P1. Tout ce qui est destructif/irréversible → **P2 minimum** (approbation)
 """
 from decision import Rule
 
+# Diagnostic par défaut joint à TOUTE alerte (PROBLEM) — ops **read-only** (P0)
+# uniquement ; le cœur refuse d'exécuter en diagnostic une op non read-only.
+# C'est le « par défaut, Atlas peut poser un diagnostic » : lancé même en plafond
+# `observe`, où aucune remédiation n'a lieu.
+DEFAULT_DIAGNOSE = (
+    ("disk-usage", ()),               # pression disque, toujours pertinent et sûr
+)
+
 # Ordre = priorité : la première règle qui matche gagne.
 POLICY = [
     # ── P1 — auto-remédiation allowlistée (idempotent / réversible) ──────────
@@ -23,7 +31,8 @@ POLICY = [
     Rule("fpm-pool-down",
          trigger=r"(?i)\bFPM\b.*\b(down|crash|unavailable)\b|pool .* (down|inactive)",
          tier="P1", op="restart-service", args=("{item}",),
-         min_severity="average", max_per_hour=3, cooldown_s=300),
+         min_severity="average", max_per_hour=3, cooldown_s=300,
+         diagnose=(("service-status", ("{item}",)),)),   # état du pool avant tout
 
     # ── P2 — approbation humaine inline (impact plus large) ──────────────────
     # Redémarrer un conteneur LXC coupe tous ses services → jamais en auto.

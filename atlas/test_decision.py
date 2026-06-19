@@ -40,7 +40,8 @@ def ev(trigger="FPM pool down", host="web1", sev="high", state="PROBLEM", ts=0.0
 # Politique de test
 RULES = [
     Rule("fpm-restart", trigger=r"FPM pool down", tier="P1", op="restart-service",
-         args=("{item}",), min_severity="average", max_per_hour=3, cooldown_s=300),
+         args=("{item}",), min_severity="average", max_per_hour=3, cooldown_s=300,
+         diagnose=(("service-status", ("{item}",)),)),
     Rule("lxc-restart", trigger=r"container down", tier="P2", op="restart-lxc",
          args=("{host}",), min_severity="high"),
     Rule("disk-warn", trigger=r"disk", tier="P0"),
@@ -50,7 +51,7 @@ RULES = [
 
 print("— Matching & paliers —")
 clk = Clock()
-eng = DecisionEngine(RULES, now=clk, breaker_max_per_hour=10)
+eng = DecisionEngine(RULES, now=clk, breaker_max_per_hour=10, ceiling="execute")
 
 d = eng.decide(ev("FPM pool down", ts=clk()))
 check("P1 → execute", d.action == "execute" and d.tier == "P1" and d.op == "restart-service")
@@ -76,7 +77,7 @@ check("{item} substitué dans les args", d3b.args == ["php8.1-fpm"])
 
 print("— Anti-flap / cooldown (avec commit) —")
 clk2 = Clock()
-eng2 = DecisionEngine(RULES, now=clk2)
+eng2 = DecisionEngine(RULES, now=clk2, ceiling="execute")
 d = eng2.decide(ev("FPM pool down", host="w", ts=clk2()))
 eng2.commit(d)
 check("après commit, PROBLEM répété dans le cooldown → suppress",
@@ -87,7 +88,7 @@ check("après cooldown écoulé → execute à nouveau",
 
 print("— Résolution referme l'épisode —")
 clk3 = Clock()
-eng3 = DecisionEngine(RULES, now=clk3)
+eng3 = DecisionEngine(RULES, now=clk3, ceiling="execute")
 eng3.commit(eng3.decide(ev("FPM pool down", host="w", ts=clk3())))
 r = eng3.decide(ev("FPM pool down", host="w", state="OK", ts=clk3()))
 check("OK → notify (résolution)", r.action == "notify" and "résolution" in r.reason)
@@ -96,7 +97,7 @@ check("après résolution, nouveau PROBLEM → execute (cooldown remis à zéro)
 
 print("— Rate-limit par règle —")
 clk4 = Clock()
-eng4 = DecisionEngine(RULES, now=clk4, breaker_max_per_hour=100)
+eng4 = DecisionEngine(RULES, now=clk4, breaker_max_per_hour=100, ceiling="execute")
 # 3 actions autorisées (max_per_hour=3), épisodes distincts pour éviter le cooldown
 for i in range(3):
     d = eng4.decide(ev("FPM pool down", host=f"h{i}", ts=clk4()))
@@ -112,7 +113,7 @@ print("— Circuit-breaker global —")
 clk5 = Clock()
 eng5 = DecisionEngine([Rule("any", trigger=r".*", tier="P1", op="restart-service",
                             max_per_hour=100, cooldown_s=0)],
-                      now=clk5, breaker_max_per_hour=5)
+                      now=clk5, breaker_max_per_hour=5, ceiling="execute")
 for i in range(5):
     eng5.commit(eng5.decide(ev("x", host=f"h{i}", ts=clk5())))
 check("6e action toutes règles confondues → escalate (breaker)",
@@ -120,7 +121,7 @@ check("6e action toutes règles confondues → escalate (breaker)",
 
 print("— Persistance de l'état —")
 state = eng4.export_state()
-eng6 = DecisionEngine(RULES, now=clk4, breaker_max_per_hour=100)
+eng6 = DecisionEngine(RULES, now=clk4, breaker_max_per_hour=100, ceiling="execute")
 eng6.load_state(state)
 check("état rechargé → mêmes compteurs de garde-fous",
       eng6.export_state()["actions_by_rule"] == state["actions_by_rule"])
@@ -144,7 +145,7 @@ op_ids = {o.id for o in OPERATIONS}
 check("POLICY charge sans erreur", len(POLICY) >= 1)
 check("toute op P1/P2 de la politique existe au catalogue",
       all(r.op in op_ids for r in POLICY if r.tier in ("P1", "P2")))
-peng = DecisionEngine(POLICY, now=Clock())
+peng = DecisionEngine(POLICY, now=Clock(), ceiling="execute")
 check("politique : 'FPM pool down' → P1 execute",
       peng.decide(Event("zabbix", "web1", "PHP FPM pool down", item="calicote-74",
                         severity="high")).action == "execute")
@@ -157,6 +158,46 @@ check("politique : 'reboot required' → never (notify)",
 check("politique : 'disk 95%' → P0 notify",
       peng.decide(Event("zabbix", "web1", "disk space 95% used",
                         severity="average")).action == "notify")
+
+print("— Plafond d'autonomie (observe / approve / execute) —")
+# observe (DÉFAUT) : aucune action — P1 et P2 ramenés à notify + retenue
+obs = DecisionEngine(RULES, now=Clock())  # ceiling par défaut = observe
+d = obs.decide(ev("FPM pool down"))
+check("défaut = observe", obs.ceiling == "observe")
+check("observe : P1 -> notify (retenu)", d.action == "notify" and d.held and d.proposed == "execute")
+check("observe : op proposée conservée pour l'affichage", d.op == "restart-service")
+d = obs.decide(ev("container down", host="srv-x"))
+check("observe : P2 -> notify (retenu)", d.action == "notify" and d.held and d.proposed == "approve")
+check("observe : P0 inchangé (pas de retenue)",
+      not obs.decide(ev("disk 90% full", sev="average")).held)
+
+appr = DecisionEngine(RULES, now=Clock(), ceiling="approve")
+d = appr.decide(ev("FPM pool down"))
+check("approve : P1 -> approve (retenu)", d.action == "approve" and d.held and d.proposed == "execute")
+check("approve : P2 -> approve (non retenu)",
+      not appr.decide(ev("container down", host="z2")).held
+      and appr.decide(ev("container down", host="z3")).action == "approve")
+
+ex = DecisionEngine(RULES, now=Clock(), ceiling="execute")
+check("execute : P1 -> execute", ex.decide(ev("FPM pool down")).action == "execute")
+
+try:
+    DecisionEngine(RULES, ceiling="yolo")
+    check("plafond invalide rejeté", False)
+except ValueError:
+    check("plafond invalide rejeté", True)
+
+print("— Plan de diagnostic —")
+deng = DecisionEngine(RULES, now=Clock(), default_diagnose=(("disk-usage", ()),))
+d = deng.decide(Event("zabbix", "web1", "FPM pool down", item="calicote-74", severity="high"))
+ops_diag = [st["op"] for st in d.diagnose]
+check("diagnostic : défaut (disk-usage) présent", "disk-usage" in ops_diag)
+check("diagnostic : règle (service-status {item}) + substitution",
+      any(st["op"] == "service-status" and st["args"] == ["calicote-74"] for st in d.diagnose))
+check("diagnostic : pas de doublon",
+      len(ops_diag) == len(set(tuple([st["op"]] + st["args"]) for st in d.diagnose)))
+check("diagnostic : aucun sur résolution OK",
+      deng.decide(ev("FPM pool down", state="OK")).diagnose == [])
 
 print("ÉCHEC" if FAILED else "TOUS LES TESTS PASSENT")
 sys.exit(1 if FAILED else 0)

@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # métadonnées du catalogue (listing) uniquement
 from operations import OPERATIONS
 from atlas_client import (submit, submit_resolve, submit_poll,  # socket du cœur (RM2039/RM1813)
-                          CoreUnavailable)
+                          submit_status, CoreUnavailable)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -239,6 +239,32 @@ _SEV_ICON = {"disaster": "🟥", "high": "🟧", "average": "🟨",
              "warning": "🟦", "information": "⬜", "not_classified": "⬜"}
 
 
+def _diag_block(n):
+    """Bloc « diagnostic » (ops read-only) à joindre à l'alerte, si présent."""
+    diag = n.get("diagnosis") or []
+    if not diag:
+        return ""
+    lines = []
+    for d in diag:
+        mark = "" if d.get("ok") else "⚠️ "
+        out = _trunc((d.get("output") or "").strip(), 600)
+        lines.append(f"<b>{mark}{html.escape(d.get('op') or '?')}</b>\n"
+                     f"<pre>{html.escape(out)}</pre>")
+    return "\n🔎 <b>Diagnostic</b>\n" + "\n".join(lines)
+
+
+def _held_note(n):
+    """Note quand le plafond d'autonomie a retenu une action."""
+    if not n.get("held"):
+        return ""
+    proposed = {"execute": "auto-remédiation", "approve": "approbation"}.get(
+        n.get("proposed"), n.get("proposed") or "action")
+    op = html.escape(n.get("op") or "?")
+    args = html.escape(" ".join(n.get("args") or []))
+    return (f"\n🛡️ <i>Plafond d'autonomie : {proposed} <code>{op} {args}</code> "
+            f"proposée mais NON exécutée — diagnostic seul.</i>")
+
+
 def format_notif(n):
     """(texte HTML, clavier|None) pour une notification du cœur."""
     state = (n.get("state") or "").upper()
@@ -249,27 +275,32 @@ def format_notif(n):
     reason = html.escape(n.get("reason") or "")
     head = f"{icon} <b>{host}</b> — {trig}"
     meta = f"\n<i>{reason}</i>\n[{n.get('tier')} · {sev}{html.escape(n.get('severity') or '')} · {state}]"
+    diag = _diag_block(n)
 
-    if n.get("action") == "execute":
-        ex = n.get("exit")
-        verdict = "réussie ✅" if n.get("ok") else f"échouée ⚠️ (exit {ex})"
-        op = html.escape(n.get("op") or "?")
-        return f"{head}\n🔧 Auto-remédiation P1 <code>{op}</code> {verdict}.{meta}", None
-
+    # approve réel (token présent) → boutons. Si le plafond a retenu l'action,
+    # il n'y a pas de token → on tombe sur l'alerte enrichie + note de plafond.
     if n.get("action") == "approve" and n.get("token"):
         op = html.escape(n.get("op") or "?")
         args = html.escape(" ".join(n.get("args") or []))
         tok = n["token"]
         txt = (f"{head}\n❓ <b>Approbation requise</b> — action proposée :\n"
-               f"<code>{op} {args}</code>{meta}")
+               f"<code>{op} {args}</code>{meta}{diag}")
         kbd = [[{"text": "✅ Approuver", "callback_data": f"a:ok:{tok}"},
                 {"text": "✖️ Refuser", "callback_data": f"a:no:{tok}"}]]
         return txt, kbd
 
-    if n.get("action") == "escalate":
-        return f"{head}\n🚨 <b>Escalade</b> — garde-fou déclenché, action automatique stoppée.{meta}", None
+    if n.get("action") == "execute":
+        ex = n.get("exit")
+        verdict = "réussie ✅" if n.get("ok") else f"échouée ⚠️ (exit {ex})"
+        op = html.escape(n.get("op") or "?")
+        return f"{head}\n🔧 Auto-remédiation P1 <code>{op}</code> {verdict}.{meta}{diag}", None
 
-    return f"{head}{meta}", None
+    if n.get("action") == "escalate":
+        return (f"{head}\n🚨 <b>Escalade</b> — garde-fou déclenché, action automatique "
+                f"stoppée.{meta}{_held_note(n)}{diag}"), None
+
+    # notify (y compris action retenue par le plafond) → alerte + diagnostic
+    return f"{head}{meta}{_held_note(n)}{diag}", None
 
 
 def poll_and_notify(bot):
@@ -436,11 +467,24 @@ def handle(bot, msg):
     if cmd == "/status":
         up = timedelta(seconds=int(now - bot["start"]))
         verrou = "désactivé (setup)" if not lock.enabled else "actif 🔓 (session ouverte)"
+        # Plafond d'autonomie + compteurs : interrogés au cœur.
+        ceil_line = ""
+        try:
+            st = submit_status(actor="atlas-bot")
+            _CEIL_LABEL = {"observe": "observe (diagnostic seul)",
+                           "approve": "approve (approbation humaine)",
+                           "execute": "execute (auto-remédiation)"}
+            ceil_line = (f"\n• Autonomie : <b>{_CEIL_LABEL.get(st.get('ceiling'), st.get('ceiling'))}</b>"
+                         f"\n• Diagnostic auto : {'on' if st.get('diagnose') else 'off'}"
+                         f"\n• Règles : {st.get('rules')} · approbations en attente : {st.get('pending')}")
+        except CoreUnavailable:
+            ceil_line = "\n• Cœur : ⚠️ injoignable"
         send(token, chat_id, f"✅ Atlas en ligne ({bot['version']}).\n"
                              f"• Uptime : {up}\n"
                              f"• Verrou : {verrou}\n"
                              f"• Auto-lock : {AUTO_LOCK_SECONDS} s\n"
-                             f"• Catalogue : {len(bot['cat'].list())} opération(s)")
+                             f"• Catalogue : {len(bot['cat'].list())} opération(s)"
+                             f"{ceil_line}")
         return
 
     if cmd == "/ops":

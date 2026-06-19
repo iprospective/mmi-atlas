@@ -68,3 +68,8 @@ def submit_resolve(token, approved, *, actor="?", timeout=90):
 def submit_poll(maxn=50, *, actor="?", timeout=15):
     """Tire les notifications du cœur en attente (alertes + approbations P2)."""
     return _request({"kind": "poll", "actor": actor, "max": maxn}, timeout)
+
+
+def submit_status(*, actor="?", timeout=10):
+    """État du cœur : plafond d'autonomie, diagnostic, compteurs (RM1813)."""
+    return _request({"kind": "status", "actor": actor}, timeout)

@@ -18,6 +18,8 @@ RestartSec=3
 Environment=ATLAS_SOCKET=/run/atlas/atlas.sock
 Environment=ATLAS_SOCKET_GROUP=atlas-ifaces
 Environment=ATLAS_AUDIT_PATH=/opt/atlas/data/audit.jsonl
+# Paramètres (plafond d'autonomie, diagnostic) — optionnel ; défaut = observe.
+EnvironmentFile=-/opt/atlas/core.env
 
 # ── Durcissement ──
 # ⚠ PAS de NoNewPrivileges : le cœur DOIT pouvoir `sudo -n` les ops privilégiées.

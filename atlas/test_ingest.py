@@ -62,6 +62,8 @@ core = load("atlas_core", "atlas-core.py", {
     "ATLAS_DATA_DIR": str(tmp),
     "ATLAS_DECISION_STATE": str(tmp / "state.json"),
     "ATLAS_DECISIONS_LOG": str(tmp / "decisions.jsonl"),
+    "ATLAS_AUTONOMY_CEILING": "execute",   # tests mécaniques : autonomie pleine
+    "ATLAS_DIAGNOSE": "1",
 })
 
 
@@ -151,6 +153,43 @@ check("execute : pas de clavier", kbd2 is None and "réussie" in txt2)
 txt3, kbd3 = bot.format_notif({"action": "notify", "tier": "P0", "host": "h", "trigger": "t",
                                "severity": "average", "state": "OK", "reason": "résolution"})
 check("résolution OK : icône ✅, pas de clavier", kbd3 is None and txt3.startswith("✅"))
+txt4, kbd4 = bot.format_notif({"action": "notify", "tier": "P1", "host": "web1",
+                               "trigger": "FPM down", "severity": "high", "state": "PROBLEM",
+                               "reason": "plafond observe", "op": "restart-service", "args": ["x"],
+                               "held": True, "proposed": "execute",
+                               "diagnosis": [{"op": "disk-usage", "ok": True, "output": "/ 80%"}]})
+check("held : note de plafond + bloc diagnostic, sans clavier",
+      kbd4 is None and "Plafond" in txt4 and "Diagnostic" in txt4)
+
+print("— cœur : diagnostic automatique (read-only) joint aux alertes —")
+r = core.handle_event(event("PHP FPM pool down", host="dg"), UID)
+diag_ops = [d["op"] for d in r.get("diagnosis", [])]
+check("diagnostic : disk-usage + service-status lancés (read-only)",
+      "disk-usage" in diag_ops and "service-status" in diag_ops)
+check("diagnostic : sortie capturée (faux runner)",
+      all(d.get("output") == "FAKE-OK" for d in r["diagnosis"]))
+
+print("— cœur : plafond observe (défaut prod) — aucune action, diagnostic seul —")
+core.ENGINE._actions_by_rule.clear()  # repart à zéro côté garde-fous (rate-limit)
+core.ENGINE._episodes.clear()
+core.ENGINE.ceiling = "observe"
+r = core.handle_event(event("PHP FPM pool down", host="obs1"), UID)
+check("observe : P1 -> notify (retenu, non exécuté)",
+      r["action"] == "notify" and r["held"] and r["proposed"] == "execute")
+check("observe : pas de 'result' (rien exécuté)", "result" not in r)
+check("observe : diagnostic tout de même présent", len(r.get("diagnosis", [])) >= 1)
+r = core.handle_event(event("LXC container down", host="obs2"), UID)
+check("observe : P2 -> notify (retenu), pas de token",
+      r["action"] == "notify" and r["held"] and not r.get("token"))
+# refus de diagnostiquer avec une op non read-only
+bad = core._run_diagnostics([{"op": "restart-service", "args": ["x"]}], actor="t")
+check("diagnostic : op non read-only refusée", bad and not bad[0]["ok"])
+core.ENGINE.ceiling = "execute"  # on rétablit pour la suite
+
+print("— cœur : statut (plafond + compteurs) —")
+st = core.handle_status({}, UID)
+check("status : expose le plafond + diagnostic",
+      st["ceiling"] == "execute" and st["diagnose"] is True and st["rules"] >= 1)
 
 print("ÉCHEC" if FAILED else "TOUS LES TESTS PASSENT")
 sys.exit(1 if FAILED else 0)
