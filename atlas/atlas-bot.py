@@ -2,11 +2,16 @@
 """atlas-bot — Bot Telegram « standardiste » d'Atlas (RM1812 / RM1814).
 
 Coquille SÉCURISÉE du bot sysadmin Atlas : surface de communication + double
-facteur d'authentification. À ce stade **aucune exécution privilégiée** — le
-catalogue de scripts vetted (RM1816) se branchera sur le point d'extension
-`dispatch_operation()` ci-dessous.
+facteur d'authentification. **Zéro privilège** : le bot ne valide ni n'exécute —
+il *relaie* au cœur via le socket (RM2039) qui, lui, valide (catalogue) + exécute.
 
-Le bot ne raisonne pas : il route Telegram ↔ opérations. Sécurité reprise de
+Deux sens de trafic :
+  - **humain → cœur** : commandes `/run` relayées au cœur (RM2039) ;
+  - **cœur → humain** : le bot *tire* les notifications du moteur de décision
+    (RM1813) — alertes, escalades, et **approbations P2** postées avec boutons
+    inline ; un tap « ✅ » appelle `resolve` (exige une session déverrouillée).
+
+Le bot ne raisonne pas : il route Telegram ↔ cœur. Sécurité reprise de
 `karl-telegram-bot` (RM1724/RM1777), durcie pour le périmètre sudo :
 
   1. **Whitelist** d'IDs Telegram (ATLAS_WHITELIST) — qui peut parler au bot.
@@ -48,7 +53,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # métadonnées du catalogue (listing) uniquement
 from operations import OPERATIONS
-from atlas_client import submit, CoreUnavailable   # exécution = via le socket du cœur (RM2039)
+from atlas_client import (submit, submit_resolve, submit_poll,  # socket du cœur (RM2039/RM1813)
+                          CoreUnavailable)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -162,6 +168,26 @@ def delete_message(token, chat_id, message_id):
         pass
 
 
+def send_kbd(token, chat_id, text, keyboard):
+    tg(token, "sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
+       disable_web_page_preview=True, reply_markup={"inline_keyboard": keyboard})
+
+
+def edit_text(token, chat_id, message_id, text):
+    try:
+        tg(token, "editMessageText", chat_id=chat_id, message_id=message_id,
+           text=text, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+def answer_callback(token, cb_id, text=""):
+    try:
+        tg(token, "answerCallbackQuery", callback_query_id=cb_id, text=text)
+    except Exception:
+        pass
+
+
 # ─────────────────────── Catalogue : liste & exécution ─────────────────────
 
 def _trunc(s, n):
@@ -206,12 +232,122 @@ def cmd_run(actor, op_id, args):
     return f"{head} <b>{html.escape(op_id)}</b> — {resp.get('duration_ms', '?')} ms{body}"
 
 
+# ──────────────────── Notifications du cœur → Telegram (RM1813) ─────────────
+
+_ACTION_ICON = {"execute": "🔧", "approve": "❓", "escalate": "🚨", "notify": "🔔"}
+_SEV_ICON = {"disaster": "🟥", "high": "🟧", "average": "🟨",
+             "warning": "🟦", "information": "⬜", "not_classified": "⬜"}
+
+
+def format_notif(n):
+    """(texte HTML, clavier|None) pour une notification du cœur."""
+    state = (n.get("state") or "").upper()
+    icon = "✅" if state == "OK" else _ACTION_ICON.get(n.get("action"), "🔔")
+    sev = _SEV_ICON.get((n.get("severity") or "").lower(), "")
+    host = html.escape(n.get("host") or "?")
+    trig = html.escape(n.get("trigger") or "?")
+    reason = html.escape(n.get("reason") or "")
+    head = f"{icon} <b>{host}</b> — {trig}"
+    meta = f"\n<i>{reason}</i>\n[{n.get('tier')} · {sev}{html.escape(n.get('severity') or '')} · {state}]"
+
+    if n.get("action") == "execute":
+        ex = n.get("exit")
+        verdict = "réussie ✅" if n.get("ok") else f"échouée ⚠️ (exit {ex})"
+        op = html.escape(n.get("op") or "?")
+        return f"{head}\n🔧 Auto-remédiation P1 <code>{op}</code> {verdict}.{meta}", None
+
+    if n.get("action") == "approve" and n.get("token"):
+        op = html.escape(n.get("op") or "?")
+        args = html.escape(" ".join(n.get("args") or []))
+        tok = n["token"]
+        txt = (f"{head}\n❓ <b>Approbation requise</b> — action proposée :\n"
+               f"<code>{op} {args}</code>{meta}")
+        kbd = [[{"text": "✅ Approuver", "callback_data": f"a:ok:{tok}"},
+                {"text": "✖️ Refuser", "callback_data": f"a:no:{tok}"}]]
+        return txt, kbd
+
+    if n.get("action") == "escalate":
+        return f"{head}\n🚨 <b>Escalade</b> — garde-fou déclenché, action automatique stoppée.{meta}", None
+
+    return f"{head}{meta}", None
+
+
+def poll_and_notify(bot):
+    """Tire les notifications du cœur et les poste aux chats d'alerte."""
+    try:
+        resp = submit_poll(actor="atlas-bot")
+    except CoreUnavailable:
+        return  # cœur down : on réessaiera au prochain tour (alertes best-effort)
+    for n in resp.get("notifs", []):
+        text, kbd = format_notif(n)
+        for chat_id in bot["alert_chats"]:
+            try:
+                if kbd:
+                    send_kbd(bot["token"], chat_id, text, kbd)
+                else:
+                    send(bot["token"], chat_id, text)
+            except Exception as e:
+                print(f"  ⚠ notif → chat {chat_id} échec : {e}")
+
+
+def handle_callback(bot, cb):
+    """Tap sur un bouton inline — résout une approbation P2 (RM1813)."""
+    token = bot["token"]
+    lock = bot["lock"]
+    cb_id = cb["id"]
+    data = cb.get("data") or ""
+    user = cb.get("from") or {}
+    uid = user.get("id")
+    msg = cb.get("message") or {}
+    chat_id = msg.get("chat", {}).get("id")
+    msg_id = msg.get("message_id")
+    now = time.time()
+
+    wl = bot["whitelist"]
+    if wl and uid not in wl:
+        return answer_callback(token, cb_id, "Non autorisé.")
+    # Une approbation EXÉCUTE une op privilégiée → exige une session déverrouillée.
+    if not lock.is_unlocked(chat_id, now):
+        return answer_callback(token, cb_id, "🔒 Verrouillé — /unlock d'abord, puis re-tape.")
+    lock.touch(chat_id, now)
+
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "a":
+        return answer_callback(token, cb_id, "Action inconnue.")
+    approved = parts[1] == "ok"
+    tok = parts[2]
+    try:
+        resp = submit_resolve(tok, approved, actor=f"telegram:{uid}")
+    except CoreUnavailable as e:
+        return answer_callback(token, cb_id, f"Cœur injoignable : {e}")
+
+    if not resp.get("ok"):
+        answer_callback(token, cb_id, resp.get("error", "Échec."))
+        if msg_id:
+            edit_text(token, chat_id, msg_id, "⏱️ <i>Approbation périmée ou déjà traitée.</i>")
+        return
+    if resp.get("action") == "denied":
+        answer_callback(token, cb_id, "Refusé.")
+        edit_text(token, chat_id, msg_id, "✖️ <b>Action refusée.</b> Aucune exécution.")
+        return
+    # executed
+    r = resp.get("result", {})
+    verdict = "réussie ✅" if r.get("ok") else f"échouée ⚠️ (exit {r.get('exit')})"
+    op = html.escape(resp.get("op") or "?")
+    answer_callback(token, cb_id, "Approuvé — exécution lancée.")
+    edit_text(token, chat_id, msg_id,
+              f"✅ <b>Approuvé</b> par @{html.escape(user.get('username') or str(uid))} — "
+              f"<code>{op}</code> {verdict}.")
+
+
 # ────────────────────────────────── Handler ─────────────────────────────────
 
 HELP = ("<b>Atlas</b> — bot sysadmin sécurisé. Commandes :\n"
         "/status — état du bot\n"
         "/ops — liste des opérations du catalogue\n"
         "/run &lt;op&gt; [args…] — exécute une opération\n"
+        "(les alertes &amp; approbations du monitoring arrivent automatiquement ; "
+        "approuver = tap ✅ sur le bouton, session déverrouillée)\n"
         "/lock — verrouiller\n"
         "/unlock &lt;mdp&gt; — déverrouiller\n"
         "/whoami — ton ID Telegram\n"
@@ -363,8 +499,15 @@ def main():
     lock = Lock(os.environ.get("ATLAS_LOCK_PASSWORD_HASH"))
     cat = Catalogue(OPERATIONS)
 
+    # Chats où poster les alertes/approbations du moteur (RM1813). Défaut = whitelist
+    # (bot privé : chat_id == user_id en messages directs).
+    alert_raw = os.environ.get("ATLAS_ALERT_CHAT", "")
+    alert_chats = {int(x) for x in alert_raw.replace(" ", "").split(",") if x.lstrip("-").isdigit()}
+    if not alert_chats:
+        alert_chats = set(whitelist)
+
     bot = {"token": token, "whitelist": whitelist, "lock": lock, "cat": cat,
-           "start": time.time(), "version": VERSION}
+           "alert_chats": alert_chats, "start": time.time(), "version": VERSION}
 
     me = tg(token, "getMe")["result"]
     print(f"✓ Atlas connecté : @{me.get('username')} ({me.get('first_name')})")
@@ -388,6 +531,14 @@ def main():
             continue
         for upd in resp.get("result", []):
             offset = upd["update_id"] + 1
+            cb = upd.get("callback_query")
+            if cb:
+                print(f"  → update {upd['update_id']} : callback {cb.get('data')!r}")
+                try:
+                    handle_callback(bot, cb)
+                except Exception as e:
+                    print(f"  ⚠ callback erreur : {e}")
+                continue
             msg = upd.get("message") or upd.get("edited_message")
             if not msg or "text" not in msg:
                 continue
@@ -398,6 +549,12 @@ def main():
                 handle(bot, msg)
             except Exception as e:
                 print(f"  ⚠ handler erreur : {e}")
+
+        # Tire les notifications du cœur (alertes + approbations P2) et les poste.
+        try:
+            poll_and_notify(bot)
+        except Exception as e:
+            print(f"  ⚠ poll cœur erreur : {e}")
 
 
 if __name__ == "__main__":
