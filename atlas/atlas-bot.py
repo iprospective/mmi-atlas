@@ -46,8 +46,9 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from catalogue import Catalogue, ValidationError
+from catalogue import Catalogue, ValidationError  # métadonnées du catalogue (listing) uniquement
 from operations import OPERATIONS
+from atlas_client import submit, CoreUnavailable   # exécution = via le socket du cœur (RM2039)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -187,16 +188,22 @@ def cmd_ops(cat):
             + "\n\nLancer : <code>/run &lt;op&gt; [args…]</code>")
 
 
-def cmd_run(cat, actor, op_id, args):
-    """Valide + exécute une opération du catalogue ; renvoie un message HTML."""
+def cmd_run(actor, op_id, args):
+    """Soumet l'op au CŒUR Atlas via le socket (RM2039) ; renvoie un message HTML.
+
+    Le bot ne valide ni n'exécute plus lui-même (zéro privilège) : il **relaie**
+    l'intention au cœur, qui valide (catalogue), exécute (sudo local ou dispatch
+    SSH RM1813) et audite."""
     try:
-        res = cat.run(op_id, args, actor=actor)
-    except ValidationError as e:
-        return f"❌ {html.escape(str(e))}"
-    head = "✅" if res.ok else f"⚠️ (exit {res.exit_code})"
-    out = _trunc((res.stdout or res.stderr or "").rstrip(), 3500)
+        resp = submit(op_id, args, actor=actor)
+    except CoreUnavailable as e:
+        return f"❌ cœur Atlas injoignable — {html.escape(str(e))}"
+    if resp.get("error"):
+        return f"❌ {html.escape(resp['error'])}"
+    head = "✅" if resp.get("ok") else f"⚠️ (exit {resp.get('exit')})"
+    out = _trunc((resp.get("stdout") or resp.get("stderr") or "").rstrip(), 3500)
     body = f"\n<pre>{html.escape(out)}</pre>" if out else ""
-    return f"{head} <b>{html.escape(op_id)}</b> — {res.duration_ms} ms{body}"
+    return f"{head} <b>{html.escape(op_id)}</b> — {resp.get('duration_ms', '?')} ms{body}"
 
 
 # ────────────────────────────────── Handler ─────────────────────────────────
@@ -310,7 +317,7 @@ def handle(bot, msg):
                                  "Liste : /ops")
             return
         actor = f"telegram:{uid}"
-        _safe(token, chat_id, lambda: cmd_run(bot["cat"], actor, parts[1], parts[2:]))
+        _safe(token, chat_id, lambda: cmd_run(actor, parts[1], parts[2:]))
         return
 
     send(token, chat_id, "Commande inconnue. /help pour la liste.")
