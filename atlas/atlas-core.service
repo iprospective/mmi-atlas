@@ -28,7 +28,8 @@ EnvironmentFile=-/opt/atlas/core.env
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/atlas/data /run/atlas
+# data (audit/état) + /run/atlas (socket) + .ssh (known_hosts du dispatch atlas-safe, RM2050)
+ReadWritePaths=/opt/atlas/data /run/atlas /opt/atlas/.ssh
 
 [Install]
 WantedBy=multi-user.target

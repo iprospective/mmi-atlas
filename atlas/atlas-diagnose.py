@@ -15,12 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_dispatch import diagnose_bundle           # noqa: E402
 from atlas_ai import diagnose, AIUnavailable          # noqa: E402
-
-PROFILES = {
-    "base": [("disk-usage", []), ("tail-log", ["syslog", "40"])],
-    "db":   [("db-instances", []), ("service-status", ["mariadb"]),
-             ("journal", ["mariadb", "40"])],
-}
+from policy import DIAG_PROFILES as PROFILES          # noqa: E402
 
 
 def main():

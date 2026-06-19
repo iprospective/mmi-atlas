@@ -267,6 +267,13 @@ def _held_note(n):
 
 def format_notif(n):
     """(texte HTML, clavier|None) pour une notification du cœur."""
+    # Diagnostic IA on-target (RM2050) — message dédié, sans clavier.
+    if n.get("action") == "ai-diagnosis":
+        host = html.escape(n.get("host") or "?")
+        trig = html.escape(n.get("trigger") or "")
+        text = html.escape(_trunc(n.get("text") or "", 3500))
+        return f"🧠 <b>Diagnostic IA — {host}</b>\n<i>{trig}</i>\n\n{text}", None
+
     state = (n.get("state") or "").upper()
     icon = "✅" if state == "OK" else _ACTION_ICON.get(n.get("action"), "🔔")
     sev = _SEV_ICON.get((n.get("severity") or "").lower(), "")

@@ -25,6 +25,15 @@ from decision import Rule
 # P0 read-only) reste en place, dormant, et sera peuplé là-bas avec `node = event.host`.
 DEFAULT_DIAGNOSE = ()
 
+# Profils de diagnostic ON-TARGET (RM2050) : bundles d'ops read-only `atlas-safe`
+# dispatchés par le cœur SUR le nœud concerné (event.host), puis raisonnés par atlas-ai.
+# (op_id, [args]) — ops du catalogue atlas-safe (operations_safe.py).
+DIAG_PROFILES = {
+    "base": [("disk-usage", []), ("tail-log", ["syslog", "40"])],
+    "db":   [("db-instances", []), ("service-status", ["mariadb"]),
+             ("journal", ["mariadb", "40"])],
+}
+
 # Ordre = priorité : la première règle qui matche gagne.
 POLICY = [
     # ── P1 — auto-remédiation allowlistée (idempotent / réversible) ──────────
@@ -42,6 +51,14 @@ POLICY = [
          trigger=r"(?i)\b(container|lxc)\b.*\b(down|unreachable|stopped)\b",
          tier="P2", op="restart-lxc", args=("{host}",),
          min_severity="high", max_per_hour=2, cooldown_s=600),
+
+    # ── P0 + diagnostic IA on-target (RM2050) ────────────────────────────────
+    # Un service DB down : on NE redémarre PAS en auto (disruptif) → notify, mais on
+    # déclenche le diagnostic read-only on-target (atlas-safe) + le raisonnement atlas-ai.
+    Rule("db-down",
+         trigger=r"(?i)\b(mysql|mariadb|database)\b.*\b(down|service|unavailable|crash|stopp?ed)\b"
+                 r"|\bservice is down\b.*\b(mysql|mariadb)\b",
+         tier="P0", min_severity="average", diag_profile="db"),
 
     # ── never — explicitement « jamais d'action automatique » ────────────────
     # Signaux qui exigent un humain (matériel, redémarrage hôte, corruption…).

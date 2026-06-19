@@ -64,6 +64,7 @@ core = load("atlas_core", "atlas-core.py", {
     "ATLAS_DECISIONS_LOG": str(tmp / "decisions.jsonl"),
     "ATLAS_AUTONOMY_CEILING": "execute",   # tests mécaniques : autonomie pleine
     "ATLAS_DIAGNOSE": "1",
+    "ATLAS_AI_DIAGNOSE": "0",              # pas de SSH/LLM on-target en test
 })
 
 
