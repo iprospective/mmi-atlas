@@ -6,7 +6,7 @@
  * ici on alimente le chemin AUTONOME d'Atlas avec un JSON structuré et SIGNÉ.
  *
  * Paramètres du media type (onglet « Paramètres ») — clés = valeurs :
- *   URL        http://atlas.vrack:8088/ingest      (IP/much vrack du conteneur atlas)
+ *   URL        http://atlas.lan:8088/ingest        (nom vrack du conteneur atlas — eth1)
  *   Secret     {$ATLAS_INGEST_SECRET}              (macro globale = même secret que ingest.env)
  *   Host       {HOST.HOST}
  *   Trigger    {TRIGGER.NAME}
