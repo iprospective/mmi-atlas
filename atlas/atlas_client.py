@@ -19,12 +19,8 @@ class CoreUnavailable(RuntimeError):
     """Le socket du cœur est injoignable (daemon arrêté ou droits insuffisants)."""
 
 
-def submit(op, args=(), *, actor="?", node=None, timeout=60):
-    """Soumet une intention au cœur. Retourne le dict de réponse JSON.
-
-    Lève CoreUnavailable si le socket est injoignable.
-    """
-    req = {"actor": actor, "op": op, "args": list(args), "node": node}
+def _request(req, timeout):
+    """Envoie un objet JSON au cœur et retourne sa réponse (dict)."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
@@ -42,3 +38,28 @@ def submit(op, args=(), *, actor="?", node=None, timeout=60):
         return json.loads(buf.split(b"\n", 1)[0] or b"{}")
     finally:
         s.close()
+
+
+def submit(op, args=(), *, actor="?", node=None, timeout=60):
+    """Soumet une intention (op directe, RM2039) au cœur. Retourne la réponse.
+
+    Lève CoreUnavailable si le socket est injoignable.
+    """
+    return _request({"kind": "op", "actor": actor, "op": op,
+                     "args": list(args), "node": node}, timeout)
+
+
+def submit_event(event, *, actor="?", timeout=90):
+    """Soumet un événement de monitoring normalisé au cœur (RM1813).
+
+    Le cœur applique la politique + les garde-fous (moteur de décision) et
+    exécute/approuve/notifie selon le palier. `event` = dict normalisé
+    (source, host, trigger, severity, state, event_id, item, value, ts).
+    """
+    return _request({"kind": "event", "actor": actor, "event": dict(event)}, timeout)
+
+
+def submit_resolve(token, approved, *, actor="?", timeout=90):
+    """Résout une approbation P2 en attente (RM1813 #6) : exécute si approuvé."""
+    return _request({"kind": "resolve", "actor": actor,
+                     "token": token, "approved": bool(approved)}, timeout)

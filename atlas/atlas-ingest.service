@@ -1,0 +1,39 @@
+[Unit]
+# Atlas — endpoint d'ingestion des événements de monitoring (RM1813).
+# Interface NON privilégiée : reçoit les webhooks (Zabbix), vérifie le HMAC,
+# relaie l'événement normalisé au cœur via le socket. Ne décide ni n'exécute.
+Description=Atlas — ingestion monitoring (webhook signé → cœur)
+After=network-online.target atlas-core.service
+Wants=network-online.target
+Requires=atlas-core.service
+
+[Service]
+Type=simple
+User=atlas-ingest
+Group=atlas-ingest
+# Accès au socket du cœur (/run/atlas/atlas.sock, group atlas-ifaces 0660).
+SupplementaryGroups=atlas-ifaces
+WorkingDirectory=/opt/atlas
+# Secret HMAC + bind vrack — fichier 0640 hors versionning, rempli sur le conteneur.
+EnvironmentFile=/opt/atlas/ingest.env
+Environment=ATLAS_SOCKET=/run/atlas/atlas.sock
+ExecStart=/usr/bin/python3 -u /opt/atlas/atlas-ingest.py
+Restart=on-failure
+RestartSec=5
+
+# ── Durcissement (relais pur, zéro privilège) ──
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Bind sur le vrack uniquement — ne jamais exposer sur l'IP publique.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
