@@ -398,6 +398,12 @@ def handle(bot, msg):
     cmd = parts[0].split("@")[0].lower() if parts else ""
     now = time.time()
 
+    # Les chats d'alerte (groupe Zabbix) sont OUTBOUND only : Atlas y POSTE les
+    # diagnostics du monitoring mais n'y RÉPOND PAS aux commandes (exigence : ce canal
+    # ne sert qu'aux alertes Zabbix, pas aux autres demandes). RM1813.
+    if chat_id in bot.get("alert_chats", set()):
+        return
+
     # /whoami : toujours dispo (sert à se whitelister)
     if cmd == "/whoami":
         send(token, chat_id, f"Ton telegram_user_id : <code>{uid}</code>\n"
