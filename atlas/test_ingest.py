@@ -161,13 +161,11 @@ txt4, kbd4 = bot.format_notif({"action": "notify", "tier": "P1", "host": "web1",
 check("held : note de plafond + bloc diagnostic, sans clavier",
       kbd4 is None and "Plafond" in txt4 and "Diagnostic" in txt4)
 
-print("— cœur : diagnostic automatique (read-only) joint aux alertes —")
+print("— cœur : pas de diagnostic LOCAL par défaut (on-target = RM2050) —")
 r = core.handle_event(event("PHP FPM pool down", host="dg"), UID)
-diag_ops = [d["op"] for d in r.get("diagnosis", [])]
-check("diagnostic : disk-usage + service-status lancés (read-only)",
-      "disk-usage" in diag_ops and "service-status" in diag_ops)
-check("diagnostic : sortie capturée (faux runner)",
-      all(d.get("output") == "FAKE-OK" for d in r["diagnosis"]))
+check("aucun diagnostic local trompeur sur le conteneur atlas",
+      r.get("diagnosis", []) == [])
+# Le framework reste fonctionnel si une règle déclare un diagnostic (gate P0 ci-dessous).
 
 print("— cœur : plafond observe (défaut prod) — aucune action, diagnostic seul —")
 core.ENGINE._actions_by_rule.clear()  # repart à zéro côté garde-fous (rate-limit)
@@ -177,7 +175,7 @@ r = core.handle_event(event("PHP FPM pool down", host="obs1"), UID)
 check("observe : P1 -> notify (retenu, non exécuté)",
       r["action"] == "notify" and r["held"] and r["proposed"] == "execute")
 check("observe : pas de 'result' (rien exécuté)", "result" not in r)
-check("observe : diagnostic tout de même présent", len(r.get("diagnosis", [])) >= 1)
+check("observe : pas de diagnostic local (on-target = RM2050)", r.get("diagnosis", []) == [])
 r = core.handle_event(event("LXC container down", host="obs2"), UID)
 check("observe : P2 -> notify (retenu), pas de token",
       r["action"] == "notify" and r["held"] and not r.get("token"))

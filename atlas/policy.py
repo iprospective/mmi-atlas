@@ -15,13 +15,15 @@ en P1. Tout ce qui est destructif/irréversible → **P2 minimum** (approbation)
 """
 from decision import Rule
 
-# Diagnostic par défaut joint à TOUTE alerte (PROBLEM) — ops **read-only** (P0)
-# uniquement ; le cœur refuse d'exécuter en diagnostic une op non read-only.
-# C'est le « par défaut, Atlas peut poser un diagnostic » : lancé même en plafond
-# `observe`, où aucune remédiation n'a lieu.
-DEFAULT_DIAGNOSE = (
-    ("disk-usage", ()),               # pression disque, toujours pertinent et sûr
-)
+# Diagnostic par défaut joint à TOUTE alerte (PROBLEM).
+#
+# ⚠ VIDE pour l'instant : un diagnostic doit tourner **sur le nœud concerné** par
+# l'événement (ex. `df`/`systemctl status` sur `calicote`), PAS en local sur le
+# conteneur `atlas` (sans intérêt pour un problème distant). L'exécution read-only
+# **on-target** (via `atlas-safe` + dispatch SSH read-only) est le job de **RM2050** ;
+# le framework de diagnostic (decision.py `diagnose` + cœur `_run_diagnostics`, gardé
+# P0 read-only) reste en place, dormant, et sera peuplé là-bas avec `node = event.host`.
+DEFAULT_DIAGNOSE = ()
 
 # Ordre = priorité : la première règle qui matche gagne.
 POLICY = [
@@ -31,8 +33,8 @@ POLICY = [
     Rule("fpm-pool-down",
          trigger=r"(?i)\bFPM\b.*\b(down|crash|unavailable)\b|pool .* (down|inactive)",
          tier="P1", op="restart-service", args=("{item}",),
-         min_severity="average", max_per_hour=3, cooldown_s=300,
-         diagnose=(("service-status", ("{item}",)),)),   # état du pool avant tout
+         min_severity="average", max_per_hour=3, cooldown_s=300),
+         # NB : diagnostic on-target (service-status du pool sur le nœud concerné) = RM2050.
 
     # ── P2 — approbation humaine inline (impact plus large) ──────────────────
     # Redémarrer un conteneur LXC coupe tous ses services → jamais en auto.
