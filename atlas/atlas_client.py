@@ -73,3 +73,9 @@ def submit_poll(maxn=50, *, actor="?", timeout=15):
 def submit_status(*, actor="?", timeout=10):
     """État du cœur : plafond d'autonomie, diagnostic, compteurs (RM1813)."""
     return _request({"kind": "status", "actor": actor}, timeout)
+
+
+def submit_diag(node, op="", args=(), *, actor="?", timeout=50):
+    """Diagnostic read-only on-target via atlas-safe (RM2050). Op vide → liste les ops."""
+    return _request({"kind": "diag", "actor": actor, "node": node,
+                     "op": op, "args": list(args)}, timeout)

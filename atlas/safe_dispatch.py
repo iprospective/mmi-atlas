@@ -55,7 +55,8 @@ def resolve(node, registry=None):
 def run_op(node, op_id, args=(), *, timeout=30, registry=None):
     """Exécute une op read-only sur `node` via atlas-safe. Retourne le dict JSON."""
     r = resolve(node, registry)
-    remote = shlex.join([op_id, *[str(a) for a in args]])
+    # op_id vide → commande distante vide → le runner liste ses ops (health-check / listing).
+    remote = shlex.join([op_id, *[str(a) for a in args]]) if op_id else ""
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=10"]
     if r.get("ssh_alias"):

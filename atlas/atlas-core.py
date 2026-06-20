@@ -319,6 +319,23 @@ def handle_resolve(req, uid):
                 "op": d.op, "args": d.args, "result": run}
 
 
+def handle_diag(req, uid):
+    """Diagnostic read-only ON-TARGET à la demande (RM2050) : relaie une op `atlas-safe`
+    vers un nœud via le dispatch SSH (clé via l'agent). Le cœur tient les clés ; l'appelant
+    (bot) ne fait que demander. Op vide → liste les ops read-only du nœud."""
+    node = req.get("node")
+    op = req.get("op") or ""
+    args = req.get("args", [])
+    if not isinstance(node, str) or not node:
+        return {"ok": False, "error": "nœud manquant — usage : diag <nœud> [op] [args]"}
+    if not isinstance(args, list):
+        return {"ok": False, "error": "args invalides"}
+    try:
+        return safe_dispatch.run_op(node, op, [str(a) for a in args], timeout=40)
+    except safe_dispatch.DispatchError as e:
+        return {"ok": False, "error": str(e)}
+
+
 def handle_poll(req, uid):
     """Tire (et draine) les notifications en attente — appelé par le bot (RM1813)."""
     try:
@@ -342,7 +359,7 @@ def handle_status(req, uid):
 
 
 HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve,
-            "poll": handle_poll, "status": handle_status}
+            "poll": handle_poll, "status": handle_status, "diag": handle_diag}
 
 
 def handle(conn):

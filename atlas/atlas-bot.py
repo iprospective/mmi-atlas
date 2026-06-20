@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # métadonnées du catalogue (listing) uniquement
 from operations import OPERATIONS
 from atlas_client import (submit, submit_resolve, submit_poll,  # socket du cœur (RM2039/RM1813)
-                          submit_status, CoreUnavailable)
+                          submit_status, submit_diag, CoreUnavailable)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -382,12 +382,35 @@ def handle_callback(bot, cb):
               f"<code>{op}</code> {verdict}.")
 
 
+def cmd_diag(actor, node, op, args):
+    """Diagnostic READ-ONLY on-target (RM2050) : le cœur relaie vers `atlas-safe@<nœud>`
+    (plan léger read-only ; ≠ /run qui est le plan ACTION privilégié du cœur).
+    Op vide → liste les ops read-only du nœud."""
+    try:
+        resp = submit_diag(node, op, args, actor=actor)
+    except CoreUnavailable as e:
+        return f"❌ cœur Atlas injoignable — {html.escape(str(e))}"
+    if resp.get("error"):
+        return f"❌ {html.escape(resp['error'])}"
+    if "ops" in resp and not op:
+        ops = ", ".join(resp.get("ops") or [])
+        return (f"🔎 <b>{html.escape(node)}</b> — ops read-only :\n<code>{html.escape(ops)}</code>\n"
+                f"Usage : <code>/diag {html.escape(node)} &lt;op&gt; [args…]</code>")
+    head = "✅" if resp.get("ok") else f"⚠️ (exit {resp.get('exit')})"
+    out = _trunc((resp.get("stdout") or resp.get("stderr") or "").rstrip(), 3500)
+    body = f"\n<pre>{html.escape(out)}</pre>" if out else ""
+    return (f"{head} 🔎 <b>{html.escape(node)}</b> · <code>{html.escape(op)}</code>"
+            f" — {resp.get('duration_ms', '?')} ms{body}")
+
+
 # ────────────────────────────────── Handler ─────────────────────────────────
 
 HELP = ("<b>Atlas</b> — bot sysadmin sécurisé. Commandes :\n"
         "/status — état du bot\n"
         "/ops — liste des opérations du catalogue\n"
-        "/run &lt;op&gt; [args…] — exécute une opération\n"
+        "/diag &lt;nœud&gt; [op] [args…] — diagnostic read-only on-target (flotte+clients) ; "
+        "&lt;nœud&gt; seul liste les ops\n"
+        "/run &lt;op&gt; [args…] — exécute une opération (plan action, cœur)\n"
         "(les alertes &amp; approbations du monitoring arrivent automatiquement ; "
         "approuver = tap ✅ sur le bouton, session déverrouillée)\n"
         "/lock — verrouiller\n"
@@ -515,6 +538,19 @@ def handle(bot, msg):
             return
         actor = f"telegram:{uid}"
         _safe(token, chat_id, lambda: cmd_run(actor, parts[1], parts[2:]))
+        return
+
+    if cmd == "/diag":
+        if len(parts) < 2:
+            send(token, chat_id, "Usage : <code>/diag &lt;nœud&gt; [op] [args…]</code> "
+                                 "— diagnostic <b>read-only</b> sur n'importe quel nœud "
+                                 "(flotte + clients). <code>/diag &lt;nœud&gt;</code> liste les ops.")
+            return
+        actor = f"telegram:{uid}"
+        node = parts[1]
+        op = parts[2] if len(parts) > 2 else ""
+        dargs = parts[3:]
+        _safe(token, chat_id, lambda: cmd_diag(actor, node, op, dargs))
         return
 
     send(token, chat_id, "Commande inconnue. /help pour la liste.")
