@@ -267,6 +267,10 @@ def _held_note(n):
 
 def format_notif(n):
     """(texte HTML, clavier|None) pour une notification du cœur."""
+    # Rappel opérationnel (ex. clés à recharger, RM2058) — texte déjà formaté (HTML).
+    if n.get("action") == "reminder":
+        return n.get("text") or "", None
+
     # Diagnostic IA on-target (RM2050) — message dédié, sans clavier.
     if n.get("action") == "ai-diagnosis":
         host = html.escape(n.get("host") or "?")

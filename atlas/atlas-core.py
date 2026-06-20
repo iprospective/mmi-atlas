@@ -30,6 +30,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -377,8 +378,49 @@ def handle(conn):
         conn.close()
 
 
+def _keys_encrypted():
+    """Vrai si au moins une clé d'orchestration est chiffrée (passphrase) — c.-à-d.
+    le régime RM2058 est actif (les clés ne sont utilisables que via ssh-add)."""
+    import glob
+    for k in glob.glob(os.path.expanduser("~/.ssh/atlas-*")) or glob.glob("/opt/atlas/.ssh/atlas-*"):
+        if k.endswith(".pub"):
+            continue
+        try:
+            # passphrase vide acceptée → clé EN CLAIR ; refusée → clé chiffrée.
+            r = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", k],
+                               capture_output=True, timeout=5)
+            if r.returncode != 0:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _startup_key_check():
+    """Rappel (RM2058) : si les clés sont CHIFFRÉES (régime passphrase actif) mais que
+    l'agent est VIDE, prévient sur Telegram qu'il faut faire `ssh-add` (le dispatch
+    distant est alors réellement en pause). Tant que les clés sont en clair → rien."""
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    if not sock or not _keys_encrypted():
+        return
+    try:
+        r = subprocess.run(["ssh-add", "-l"], capture_output=True, timeout=5)
+    except Exception:  # noqa: BLE001
+        return
+    if r.returncode != 0:   # 1 = agent vide, 2 = agent injoignable
+        with _LOCK:
+            _NOTIFS.append({
+                "action": "reminder",
+                "text": ("🔑 Atlas redémarré — clés d'orchestration non chargées dans "
+                         "l'agent. Le diagnostic DISTANT est en pause (les alertes, elles, "
+                         "arrivent toujours). Recharge : "
+                         "<code>sudo runuser -u atlas -- /opt/atlas/load-keys.sh</code>"),
+                "ts": time.time()})
+
+
 def main():
     _load_state()
+    _startup_key_check()
     sp = Path(SOCKET_PATH)
     sp.parent.mkdir(parents=True, exist_ok=True)
     if sp.exists():

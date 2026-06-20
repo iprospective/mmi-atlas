@@ -1,0 +1,28 @@
+[Unit]
+# Atlas — ssh-agent dédié aux clés d'orchestration (RM2058).
+# Les clés privées (/opt/atlas/.ssh/atlas-*) sont chiffrées par passphrase → au repos
+# (snapshots/backup) elles sont inutilisables. Au runtime, l'agent détient les clés
+# DÉCHIFFRÉES EN MÉMOIRE (hors snapshot), chargées à la main par `ssh-add` après
+# redémarrage (cf. /opt/atlas/load-keys.sh). Le cœur dispatche via cet agent.
+Description=Atlas — ssh-agent (clés d'orchestration, chargées par ssh-add)
+After=network.target
+
+[Service]
+Type=simple
+User=atlas
+Group=atlas
+RuntimeDirectory=atlas-ssh-agent
+RuntimeDirectoryMode=0700
+# -D : foreground ; -a : socket à chemin fixe (consommé par atlas-core via SSH_AUTH_SOCK).
+ExecStart=/usr/bin/ssh-agent -D -a /run/atlas-ssh-agent/agent.sock
+Restart=on-failure
+RestartSec=3
+
+# Durcissement (l'agent ne fait que garder des clés en mémoire).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
