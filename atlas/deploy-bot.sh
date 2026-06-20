@@ -49,17 +49,15 @@ echo "▸ Code + ops → /opt/atlas (root:root, RO)"
 ssh "$PRIMARY" "sudo lxc-attach -n ${CONTAINER} -- install -d -m 0755 -o root -g root /opt/atlas"
 tar -C "$HERE" -czf - "${CODE[@]}" ops | ssh "$PRIMARY" "sudo lxc-attach -n ${CONTAINER} -- tar xzf - -C /opt/atlas"
 
-# 2) Unit systemd + 3) user + deps + 4) ownership + 5) sudoers atlas-bot
-echo "▸ Génération du sudoers (${BOT_USER}) depuis operations.py"
-ATLAS_USER="$BOT_USER" ATLAS_PROD_OPS_DIR=/opt/atlas/ops python3 "$HERE/gen-sudoers.py" > /tmp/atlas-bot.sudoers
-visudo -cf /tmp/atlas-bot.sudoers >/dev/null && echo "  ✓ sudoers valide (local)"
+# 2) Unit systemd + 3) user + deps + 4) ownership
+# ⚠ PAS de sudoers pour le bot : depuis RM2039 le bot est un RELAIS zéro privilège
+# (c'est le CŒUR `atlas` qui détient le sudo). En déposer un ré-ouvrirait l'évasion.
 cat "$HERE/atlas-bot.service" | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/etc/systemd/system/atlas-bot.service >/dev/null"
-cat /tmp/atlas-bot.sudoers     | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/tmp/atlas-bot.sudoers >/dev/null"
 # .env : déposer un template UNIQUEMENT s'il n'existe pas (ne jamais écraser le token)
 ssh "$PRIMARY" "sudo test -f /zfs/lxc/${CONTAINER}/opt/atlas/.env" \
   || cat "$HERE/.env.example" | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/opt/atlas/.env >/dev/null"
 
-echo "▸ User ${BOT_USER}, deps, ownership, sudoers, enable (dans ${CONTAINER})"
+echo "▸ User ${BOT_USER}, deps, ownership, enable (dans ${CONTAINER})"
 BOT_USER="$BOT_USER" inct <<'SH'
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -72,12 +70,12 @@ chown -R root:root ops; chmod 0755 /opt/atlas ops; chmod 0644 *.py; chmod 0755 o
 install -d -m 0750 -o "${BOT_USER:-atlas-bot}" -g "${BOT_USER:-atlas-bot}" /opt/atlas/data
 chown root:"${BOT_USER:-atlas-bot}" /opt/atlas/.env; chmod 0640 /opt/atlas/.env
 rm -rf __pycache__ ops/__pycache__ 2>/dev/null || true
-# sudoers (re-validé côté cible)
-visudo -cf /tmp/atlas-bot.sudoers >/dev/null
-install -m 0440 -o root -g root /tmp/atlas-bot.sudoers /etc/sudoers.d/atlas-bot && rm -f /tmp/atlas-bot.sudoers
+# Garantit zéro privilège : aucun sudoers bot (le cœur le retire déjà ; idempotent).
+rm -f /etc/sudoers.d/atlas-bot
 systemctl daemon-reload
-systemctl enable atlas-bot.service >/dev/null 2>&1 || true
-echo "  ✓ sudo ${BOT_USER:-atlas-bot} :"; sudo -l -U "${BOT_USER:-atlas-bot}" 2>/dev/null | grep NOPASSWD | sed 's/^/    /'
+# restart si déjà actif (recharge le code) ; sinon enable (1er déploiement : .env à remplir).
+if systemctl is-active --quiet atlas-bot; then systemctl restart atlas-bot; else systemctl enable atlas-bot.service >/dev/null 2>&1 || true; fi
+echo "  ✓ sudo ${BOT_USER:-atlas-bot} (doit être vide) :"; sudo -l -U "${BOT_USER:-atlas-bot}" 2>/dev/null | grep -c NOPASSWD | sed 's/^/    NOPASSWD count: /'
 SH
 
 echo "✓ Bot déployé dans ${CONTAINER}."
