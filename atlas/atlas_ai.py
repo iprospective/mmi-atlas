@@ -17,9 +17,13 @@ import json
 import os
 import urllib.request
 
+from redact import redact_diagnostics
+
 ENDPOINT = os.environ.get("ATLAS_AI_ENDPOINT", "http://ai.lan:11434")
 MODEL = os.environ.get("ATLAS_AI_MODEL", "deepseek-v4-pro:cloud")
 TIMEOUT = int(os.environ.get("ATLAS_AI_TIMEOUT", "120"))
+# Masquage des données sensibles avant envoi au LLM — actif par défaut (cloisonnement).
+REDACT = os.environ.get("ATLAS_AI_REDACT", "1") not in ("0", "false", "no", "")
 
 SYSTEM = (
     "Tu es Atlas, un diagnosticien sysadmin en LECTURE SEULE pour une infra LXC/opensvc. "
@@ -53,7 +57,12 @@ def _build_user(event, diagnostics):
 
 
 def diagnose(event, diagnostics, *, endpoint=ENDPOINT, model=MODEL, timeout=TIMEOUT):
-    """Retourne le diagnostic LLM (str). Lève AIUnavailable en cas d'échec."""
+    """Retourne le diagnostic LLM (str). Lève AIUnavailable en cas d'échec.
+
+    Les diagnostics sont **caviardés** (redact) avant envoi si REDACT (défaut).
+    """
+    if REDACT:
+        diagnostics = redact_diagnostics(diagnostics)
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": SYSTEM},

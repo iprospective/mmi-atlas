@@ -1,0 +1,20 @@
+{
+  "_doc": "Registre node→endpoint du dispatch atlas-safe (RM2050). Copier en /opt/atlas/nodes.json. Optionnel : sans fichier, tout retombe sur le défaut interne <node>.lan + clé unique.",
+
+  "defaults": {
+    "user": "atlas-safe",
+    "domain": "lan",
+    "key": "/opt/atlas/.ssh/atlas-safe"
+  },
+
+  "nodes": {
+    "_exemple-hote-interne": {
+      "endpoint": "node3.lan"
+    },
+    "_exemple-serveur-client": {
+      "endpoint": "192.0.2.40",
+      "proxyjump": "client-x-gw",
+      "key": "/opt/atlas/.ssh/atlas-safe-client-x"
+    }
+  }
+}
