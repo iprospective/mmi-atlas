@@ -30,6 +30,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -40,7 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # noqa: E402
 from operations import OPERATIONS                  # noqa: E402
 from decision import DecisionEngine, Event         # noqa: E402
-from policy import POLICY, DEFAULT_DIAGNOSE         # noqa: E402
+from policy import POLICY, DEFAULT_DIAGNOSE, DIAG_PROFILES  # noqa: E402
+import atlas_ai                                     # noqa: E402
+import safe_dispatch                                # noqa: E402
 
 SOCKET_PATH = os.environ.get("ATLAS_SOCKET", "/run/atlas/atlas.sock")
 SOCKET_GROUP = os.environ.get("ATLAS_SOCKET_GROUP", "atlas-ifaces")
@@ -53,6 +56,8 @@ APPROVAL_TTL = int(os.environ.get("ATLAS_APPROVAL_TTL", "600"))  # s avant pére
 CEILING = os.environ.get("ATLAS_AUTONOMY_CEILING", "observe")
 # Diagnostic automatique sur PROBLEM (read-only) — actif par défaut.
 DIAGNOSE_ON = os.environ.get("ATLAS_DIAGNOSE", "1") not in ("0", "false", "no", "")
+# Diagnostic IA on-target (RM2050) : dispatch atlas-safe + raisonnement atlas-ai.
+AI_DIAGNOSE_ON = os.environ.get("ATLAS_AI_DIAGNOSE", "1") not in ("0", "false", "no", "")
 MAX_REQ = 64 * 1024
 
 CAT = Catalogue(OPERATIONS)
@@ -115,6 +120,55 @@ def _enqueue_notif(d, token=None, diagnosis=None, extra=None):
     _NOTIFS.append(n)
     if len(_NOTIFS) > NOTIF_MAX:
         del _NOTIFS[: len(_NOTIFS) - NOTIF_MAX]
+
+
+def _push_ai_notif(host, trigger, text):
+    """Empile une notif de diagnostic IA (depuis un thread → prend le verrou)."""
+    with _LOCK:
+        _NOTIFS.append({"action": "ai-diagnosis", "host": host, "trigger": trigger,
+                        "text": text, "ts": time.time()})
+        if len(_NOTIFS) > NOTIF_MAX:
+            del _NOTIFS[: len(_NOTIFS) - NOTIF_MAX]
+
+
+def _diagnose_async(event, host, trigger, profile):
+    """Diagnostic IA on-target (RM2050) : dispatch atlas-safe + raisonnement atlas-ai.
+
+    Tourne dans un thread (le dispatch SSH + l'appel LLM peuvent durer) → n'empêche
+    pas la réponse rapide à l'ingest. Le résultat est posté en notif séparée.
+    """
+    node = host.split(".")[0]   # FQDN Zabbix (bkp.example.net) → nom court (bkp)
+    ops = DIAG_PROFILES.get(profile)
+    if not ops:
+        return
+    try:
+        diags = safe_dispatch.diagnose_bundle(node, ops)
+    except Exception as e:  # noqa: BLE001
+        return _push_ai_notif(host, trigger, f"⚠️ collecte on-target impossible : {e}")
+    if not any(d.get("ok") for d in diags):
+        errs = "; ".join(d.get("error", "") for d in diags if d.get("error"))[:200]
+        return _push_ai_notif(host, trigger,
+                              f"⚠️ diagnostic on-target indisponible (atlas-safe sur "
+                              f"« {node} » ?) — {errs}")
+    try:
+        text = atlas_ai.diagnose(event, diags)
+    except atlas_ai.AIUnavailable as e:
+        return _push_ai_notif(host, trigger, f"⚠️ diagnostic IA indisponible : {e}")
+    _push_ai_notif(host, trigger, text)
+
+
+def _maybe_ai_diagnose(d):
+    """Lance le diagnostic IA en tâche de fond si la règle le demande (diag_profile)."""
+    if not AI_DIAGNOSE_ON or d.action == "suppress":
+        return
+    rule = d.rule
+    if not rule or not getattr(rule, "diag_profile", None):
+        return
+    event = {"source": d.event.source, "host": d.event.host, "trigger": d.event.trigger,
+             "severity": d.event.severity, "state": d.event.state, "item": d.event.item}
+    threading.Thread(target=_diagnose_async,
+                     args=(event, d.event.host, d.event.trigger, rule.diag_profile),
+                     daemon=True).start()
 
 
 def _new_token():
@@ -238,6 +292,8 @@ def handle_event(req, uid):
         else:                       # notify | escalate
             _log_decision(d)
             _enqueue_notif(d, diagnosis=diag)
+    # Diagnostic IA on-target (RM2050) — hors verrou (dispatch SSH + LLM lents).
+    _maybe_ai_diagnose(d)
     return out
 
 
@@ -322,8 +378,49 @@ def handle(conn):
         conn.close()
 
 
+def _keys_encrypted():
+    """Vrai si au moins une clé d'orchestration est chiffrée (passphrase) — c.-à-d.
+    le régime RM2058 est actif (les clés ne sont utilisables que via ssh-add)."""
+    import glob
+    for k in glob.glob(os.path.expanduser("~/.ssh/atlas-*")) or glob.glob("/opt/atlas/.ssh/atlas-*"):
+        if k.endswith(".pub"):
+            continue
+        try:
+            # passphrase vide acceptée → clé EN CLAIR ; refusée → clé chiffrée.
+            r = subprocess.run(["ssh-keygen", "-y", "-P", "", "-f", k],
+                               capture_output=True, timeout=5)
+            if r.returncode != 0:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _startup_key_check():
+    """Rappel (RM2058) : si les clés sont CHIFFRÉES (régime passphrase actif) mais que
+    l'agent est VIDE, prévient sur Telegram qu'il faut faire `ssh-add` (le dispatch
+    distant est alors réellement en pause). Tant que les clés sont en clair → rien."""
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    if not sock or not _keys_encrypted():
+        return
+    try:
+        r = subprocess.run(["ssh-add", "-l"], capture_output=True, timeout=5)
+    except Exception:  # noqa: BLE001
+        return
+    if r.returncode != 0:   # 1 = agent vide, 2 = agent injoignable
+        with _LOCK:
+            _NOTIFS.append({
+                "action": "reminder",
+                "text": ("🔑 Atlas redémarré — clés d'orchestration non chargées dans "
+                         "l'agent. Le diagnostic DISTANT est en pause (les alertes, elles, "
+                         "arrivent toujours). Recharge : "
+                         "<code>sudo runuser -u atlas -- /opt/atlas/load-keys.sh</code>"),
+                "ts": time.time()})
+
+
 def main():
     _load_state()
+    _startup_key_check()
     sp = Path(SOCKET_PATH)
     sp.parent.mkdir(parents=True, exist_ok=True)
     if sp.exists():

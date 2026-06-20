@@ -2,7 +2,8 @@
 # Atlas — le CŒUR (RM2039). Tourne sous le user dédié `atlas`, porte le catalogue +
 # le sudoers local + l'audit, et écoute le socket /run/atlas/atlas.sock.
 Description=Atlas — cœur (catalogue + socket local)
-After=network.target
+After=network.target atlas-ssh-agent.service
+Wants=atlas-ssh-agent.service
 
 [Service]
 Type=simple
@@ -18,6 +19,8 @@ RestartSec=3
 Environment=ATLAS_SOCKET=/run/atlas/atlas.sock
 Environment=ATLAS_SOCKET_GROUP=atlas-ifaces
 Environment=ATLAS_AUDIT_PATH=/opt/atlas/data/audit.jsonl
+# Dispatch distant via l'agent (clés à passphrase chargées par ssh-add ; RM2058).
+Environment=SSH_AUTH_SOCK=/run/atlas-ssh-agent/agent.sock
 # Paramètres (plafond d'autonomie, diagnostic) — optionnel ; défaut = observe.
 EnvironmentFile=-/opt/atlas/core.env
 
@@ -28,7 +31,8 @@ EnvironmentFile=-/opt/atlas/core.env
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/atlas/data /run/atlas
+# data (audit/état) + /run/atlas (socket) + .ssh (known_hosts du dispatch atlas-safe, RM2050)
+ReadWritePaths=/opt/atlas/data /run/atlas /opt/atlas/.ssh
 
 [Install]
 WantedBy=multi-user.target

@@ -108,8 +108,10 @@ class Rule:
     min_severity: str = "not_classified"  # n'applique la règle qu'au-delà de ce seuil
     max_per_hour: int = 3                 # rate-limit par règle
     cooldown_s: int = 300                 # délai mini entre 2 actions d'un même épisode
-    diagnose: tuple = ()                  # ops read-only à lancer en plus du défaut
-                                          #   ((op_id, (argtmpl…)), …) — {host}/{item}
+    diagnose: tuple = ()                  # ops read-only locales (legacy ; cf. RM2050)
+    diag_profile: "str | None" = None     # profil de diagnostic ON-TARGET (atlas-safe) :
+                                          #   le cœur dispatche ce bundle sur event.host
+                                          #   puis passe le résultat à atlas-ai (RM2050)
 
     def __post_init__(self):
         if self.tier not in TIERS:
