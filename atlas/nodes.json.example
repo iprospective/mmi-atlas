@@ -11,10 +11,14 @@
     "_exemple-hote-interne": {
       "endpoint": "node3.lan"
     },
-    "_exemple-serveur-client": {
+    "_exemple-serveur-client-simple": {
       "endpoint": "192.0.2.40",
       "proxyjump": "client-x-gw",
       "key": "/opt/atlas/.ssh/atlas-safe-client-x"
+    },
+    "_exemple-client-via-bastion": {
+      "_doc": "Cas jump + clé par hop : on délègue à un alias de /opt/atlas/.ssh/config (HostName/User/IdentityFile/ProxyJump). Cf. pilote client-mail.",
+      "ssh_alias": "client-mail"
     }
   }
 }

@@ -19,6 +19,7 @@ DEF_KEY = os.environ.get("ATLAS_SAFE_KEY", "/opt/atlas/.ssh/atlas-safe")
 DEF_USER = os.environ.get("ATLAS_SAFE_USER", "atlas-safe")
 DEF_DOMAIN = os.environ.get("ATLAS_NODE_DOMAIN", "lan")          # <node>.lan (vrack)
 REGISTRY_PATH = os.environ.get("ATLAS_NODES", "/opt/atlas/nodes.json")
+SSH_CONFIG = os.environ.get("ATLAS_SSH_CONFIG", "/opt/atlas/.ssh/config")
 
 
 class DispatchError(RuntimeError):
@@ -45,19 +46,26 @@ def resolve(node, registry=None):
         "host": e.get("endpoint", f"{node}.{domain}"),
         "key": e.get("key", key),
         "proxyjump": e.get("proxyjump"),
+        # Cas complexe (jump + clé par hop) : on délègue à un alias de la config SSH
+        # d'atlas (/opt/atlas/.ssh/config). Ex. serveur client via bastion proxy.
+        "ssh_alias": e.get("ssh_alias"),
     }
 
 
 def run_op(node, op_id, args=(), *, timeout=30, registry=None):
     """Exécute une op read-only sur `node` via atlas-safe. Retourne le dict JSON."""
     r = resolve(node, registry)
-    target = f"{r['user']}@{r['host']}"
     remote = shlex.join([op_id, *[str(a) for a in args]])
-    cmd = ["ssh", "-i", r["key"], "-o", "BatchMode=yes",
-           "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"]
-    if r.get("proxyjump"):
-        cmd += ["-J", r["proxyjump"]]
-    cmd += [target, remote]
+    opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10"]
+    if r.get("ssh_alias"):
+        # Routage délégué à la config SSH d'atlas (HostName/User/IdentityFile/ProxyJump).
+        cmd = ["ssh", "-F", SSH_CONFIG, *opts, r["ssh_alias"], remote]
+    else:
+        cmd = ["ssh", "-i", r["key"], *opts]
+        if r.get("proxyjump"):
+            cmd += ["-J", r["proxyjump"]]
+        cmd += [f"{r['user']}@{r['host']}", remote]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
