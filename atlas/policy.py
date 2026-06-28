@@ -30,6 +30,8 @@ DEFAULT_DIAGNOSE = ()
 # (op_id, [args]) — ops du catalogue atlas-safe (operations_safe.py).
 DIAG_PROFILES = {
     "base": [("disk-usage", []), ("tail-log", ["syslog", "40"])],
+    "load": [("sysload", []), ("tail-log", ["syslog", "30"])],
+    "disk": [("disk-usage", []), ("tail-log", ["syslog", "30"])],
     "db":   [("db-instances", []), ("service-status", ["mariadb"]),
              ("journal", ["mariadb", "40"])],
 }
@@ -42,8 +44,8 @@ POLICY = [
     Rule("fpm-pool-down",
          trigger=r"(?i)\bFPM\b.*\b(down|crash|unavailable)\b|pool .* (down|inactive)",
          tier="P1", op="restart-service", args=("{item}",),
-         min_severity="average", max_per_hour=3, cooldown_s=300),
-         # NB : diagnostic on-target (service-status du pool sur le nœud concerné) = RM2050.
+         min_severity="average", max_per_hour=3, cooldown_s=300,
+         diag_profile="base"),
 
     # ── P2 — approbation humaine inline (impact plus large) ──────────────────
     # Redémarrer un conteneur LXC coupe tous ses services → jamais en auto.
@@ -67,7 +69,9 @@ POLICY = [
          tier="never"),
 
     # ── P0 — notify only (filet large : disque, charge, services divers) ─────
-    Rule("disk-pressure", trigger=r"(?i)\b(disk|filesystem|inode)\b", tier="P0"),
-    Rule("load-pressure", trigger=r"(?i)\b(load|cpu|memory|swap)\b", tier="P0"),
+    Rule("disk-pressure", trigger=r"(?i)\b(disk|filesystem|inode)\b", tier="P0",
+         diag_profile="disk"),
+    Rule("load-pressure", trigger=r"(?i)\b(load|cpu|memory|swap)\b", tier="P0",
+         diag_profile="load"),
     # Tout le reste retombe sur le défaut deny-to-notify du moteur (P0).
 ]
