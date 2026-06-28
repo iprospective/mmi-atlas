@@ -64,4 +64,11 @@ OPERATIONS = (
         args=(),
         autonomy="P0", target="host", reversible=True, needs_sudo=True,
     ),
+    Operation(
+        id="sysload",
+        description="Charge / mémoire / top process CPU+RAM (read-only, sans sudo)",
+        script=OPS_DIR / "sysload.sh",
+        args=(),
+        autonomy="P0", target="host", reversible=True, needs_sudo=False,
+    ),
 )

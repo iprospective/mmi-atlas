@@ -38,10 +38,11 @@ def expect_reject(name, fn):
 
 print("— Registre atlas-safe —")
 ops = {o.id: o for o in OPERATIONS}
-check("5 ops vettées", len(OPERATIONS) == 5)
+check("6 ops vettées", len(OPERATIONS) == 6)
 check("toutes read-only (P0)", all(o.autonomy == "P0" for o in OPERATIONS))
-check("disk-usage & service-status sans sudo",
-      not ops["disk-usage"].needs_sudo and not ops["service-status"].needs_sudo)
+check("disk-usage / service-status / sysload sans sudo",
+      not ops["disk-usage"].needs_sudo and not ops["service-status"].needs_sudo
+      and not ops["sysload"].needs_sudo)
 check("journal/tail-log/db-instances privilégiés",
       ops["journal"].needs_sudo and ops["tail-log"].needs_sudo and ops["db-instances"].needs_sudo)
 
