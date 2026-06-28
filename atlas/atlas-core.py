@@ -58,6 +58,9 @@ CEILING = os.environ.get("ATLAS_AUTONOMY_CEILING", "observe")
 DIAGNOSE_ON = os.environ.get("ATLAS_DIAGNOSE", "1") not in ("0", "false", "no", "")
 # Diagnostic IA on-target (RM2050) : dispatch atlas-safe + raisonnement atlas-ai.
 AI_DIAGNOSE_ON = os.environ.get("ATLAS_AI_DIAGNOSE", "1") not in ("0", "false", "no", "")
+# Profil de diagnostic par défaut (RM2071) pour les alertes dont la règle n'en porte pas
+# → TOUTE alerte PROBLEM a au moins un diagnostic. "" pour désactiver le défaut.
+DEFAULT_AI_PROFILE = os.environ.get("ATLAS_AI_DEFAULT_PROFILE", "base")
 MAX_REQ = 64 * 1024
 
 CAT = Catalogue(OPERATIONS)
@@ -146,6 +149,12 @@ def _diagnose_async(event, host, trigger, profile):
     except Exception as e:  # noqa: BLE001
         return _push_ai_notif(host, trigger, f"⚠️ collecte on-target impossible : {e}")
     if not any(d.get("ok") for d in diags):
+        # Cause fréquente après un restart de l'agent : clés non chargées → message actionnable.
+        if _agent_keyless():
+            _push_key_reminder("dispatch distant échoué")
+            return _push_ai_notif(host, trigger,
+                                  "⚠️ diagnostic distant impossible : clés d'orchestration "
+                                  "non chargées (voir le rappel 🔑 ci-dessus).")
         errs = "; ".join(d.get("error", "") for d in diags if d.get("error"))[:200]
         return _push_ai_notif(host, trigger,
                               f"⚠️ diagnostic on-target indisponible (atlas-safe sur "
@@ -158,16 +167,18 @@ def _diagnose_async(event, host, trigger, profile):
 
 
 def _maybe_ai_diagnose(d):
-    """Lance le diagnostic IA en tâche de fond si la règle le demande (diag_profile)."""
-    if not AI_DIAGNOSE_ON or d.action == "suppress":
+    """Lance le diagnostic IA en tâche de fond (RM2050/RM2071). Profil = celui de la
+    règle, sinon le profil PAR DÉFAUT (DEFAULT_AI_PROFILE) → toute alerte PROBLEM est
+    diagnostiquée. Seulement sur PROBLEM (pas sur les résolutions OK ni les suppress)."""
+    if not AI_DIAGNOSE_ON or d.action == "suppress" or not d.event.is_problem:
         return
-    rule = d.rule
-    if not rule or not getattr(rule, "diag_profile", None):
+    profile = (getattr(d.rule, "diag_profile", None) if d.rule else None) or DEFAULT_AI_PROFILE
+    if not profile or profile not in DIAG_PROFILES:
         return
     event = {"source": d.event.source, "host": d.event.host, "trigger": d.event.trigger,
              "severity": d.event.severity, "state": d.event.state, "item": d.event.item}
     threading.Thread(target=_diagnose_async,
-                     args=(event, d.event.host, d.event.trigger, rule.diag_profile),
+                     args=(event, d.event.host, d.event.trigger, profile),
                      daemon=True).start()
 
 
@@ -413,26 +424,43 @@ def _keys_encrypted():
     return False
 
 
-def _startup_key_check():
-    """Rappel (RM2058) : si les clés sont CHIFFRÉES (régime passphrase actif) mais que
-    l'agent est VIDE, prévient sur Telegram qu'il faut faire `ssh-add` (le dispatch
-    distant est alors réellement en pause). Tant que les clés sont en clair → rien."""
-    sock = os.environ.get("SSH_AUTH_SOCK")
-    if not sock or not _keys_encrypted():
-        return
+_LAST_KEY_WARN = [0.0]          # horodatage du dernier rappel clés (anti-spam)
+KEY_WARN_COOLDOWN = 600         # au plus un rappel / 10 min
+
+
+def _agent_keyless():
+    """Vrai si le régime passphrase est actif (clés CHIFFRÉES) mais l'agent est VIDE
+    → tout dispatch distant échouera faute de clé. Agent non configuré / clés en clair
+    → False (rien à signaler)."""
+    if not os.environ.get("SSH_AUTH_SOCK") or not _keys_encrypted():
+        return False
     try:
-        r = subprocess.run(["ssh-add", "-l"], capture_output=True, timeout=5)
+        return subprocess.run(["ssh-add", "-l"], capture_output=True, timeout=5).returncode != 0
     except Exception:  # noqa: BLE001
-        return
-    if r.returncode != 0:   # 1 = agent vide, 2 = agent injoignable
-        with _LOCK:
-            _NOTIFS.append({
-                "action": "reminder",
-                "text": ("🔑 Atlas redémarré — clés d'orchestration non chargées dans "
-                         "l'agent. Le diagnostic DISTANT est en pause (les alertes, elles, "
-                         "arrivent toujours). Recharge : "
-                         "<code>sudo runuser -u atlas -- /opt/atlas/load-keys.sh</code>"),
-                "ts": time.time()})
+        return False
+
+
+def _push_key_reminder(reason="redémarré"):
+    """Poste le rappel `ssh-add` sur Telegram (au plus 1×/cooldown, anti-spam)."""
+    now = time.time()
+    with _LOCK:
+        if now - _LAST_KEY_WARN[0] < KEY_WARN_COOLDOWN:
+            return
+        _LAST_KEY_WARN[0] = now
+        _NOTIFS.append({
+            "action": "reminder",
+            "text": (f"🔑 Atlas — clés d'orchestration non chargées dans l'agent ({reason}). "
+                     "Le diagnostic DISTANT est en pause (les alertes, elles, arrivent "
+                     "toujours). Recharge : "
+                     "<code>sudo runuser -u atlas -- /opt/atlas/load-keys.sh</code>"),
+            "ts": now})
+
+
+def _startup_key_check():
+    """Au démarrage du cœur : si l'agent est vide alors que les clés sont chiffrées,
+    prévient tout de suite qu'il faut `ssh-add` (RM2058)."""
+    if _agent_keyless():
+        _push_key_reminder("redémarré")
 
 
 def main():
