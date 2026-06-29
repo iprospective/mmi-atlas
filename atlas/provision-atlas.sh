@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ⚠ DÉPRÉCIÉ (RM2042) — remplacé par package-atlas-client.sh (user renommé
+#   `atlas` → `atlas-client`, + ops/sudoers/runner/atlas-cli local en un paquet).
+#   Conservé pour référence ; ne plus l'utiliser pour de nouveaux nœuds.
+#
 # provision-atlas.sh — Provisionne le user d'exécution privilégié d'Atlas sur UN
 # nœud (hôte ou conteneur LXC). Idempotent, sans dépendance (pas d'Ansible — cf.
 # RM1815 / RM1118). À lancer en root sur chaque nœud du parc.

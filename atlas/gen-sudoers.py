@@ -29,7 +29,7 @@ USER = os.environ.get("ATLAS_USER", "atlas")
 
 def render():
     lines = [
-        "# /etc/sudoers.d/atlas — généré par gen-sudoers.py depuis operations.py.",
+        f"# sudoers Atlas (user {USER}) — généré par gen-sudoers.py depuis {OPS_MODULE}.",
         "# NE PAS éditer à la main. Une ligne = une opération privilégiée du catalogue.",
         "# Les arguments sont validés côté catalogue (pas par sudo).",
     ]

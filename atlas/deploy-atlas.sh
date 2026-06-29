@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ⚠ DÉPRÉCIÉ (RM2042) — remplacé par package-atlas-client.sh (identité renommée
+#   `atlas-client`, paquet unifié user+ops+sudoers+runner+atlas-cli local, --dry-run).
+#   Conservé pour référence ; ne plus l'utiliser pour de nouveaux nœuds.
+#
 # deploy-atlas.sh — déploie les opérations du catalogue + le sudoers sur une cible
 # (RM1817). À lancer depuis le repo (orchestration). La cible doit être root/sudo
 # et le user `atlas` doit déjà exister (provision-atlas.sh, RM1815).
