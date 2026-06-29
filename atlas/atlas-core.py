@@ -44,6 +44,7 @@ from decision import DecisionEngine, Event         # noqa: E402
 from policy import POLICY, DEFAULT_DIAGNOSE, DIAG_PROFILES  # noqa: E402
 import atlas_ai                                     # noqa: E402
 import safe_dispatch                                # noqa: E402
+import zabbix_api                                   # noqa: E402
 
 SOCKET_PATH = os.environ.get("ATLAS_SOCKET", "/run/atlas/atlas.sock")
 SOCKET_GROUP = os.environ.get("ATLAS_SOCKET_GROUP", "atlas-ifaces")
@@ -162,6 +163,13 @@ def _diagnose_async(event, host, trigger, profile, to_chat=None):
                         "non chargées (voir le rappel 🔑 ci-dessus).")
         errs = "; ".join(d.get("error", "") for d in diags if d.get("error"))[:200]
         return push(f"⚠️ diagnostic on-target indisponible (atlas-safe sur « {node} » ?) — {errs}")
+    # Contexte Zabbix (RM2072) : problèmes actifs du host + ancienneté = TENDANCE,
+    # ajoutée au bundle pour le LLM. Dégrade proprement si Zabbix down/non configuré.
+    try:
+        diags = diags + [{"op": "zabbix-contexte", "ok": True,
+                          "stdout": zabbix_api.host_context(host)}]
+    except zabbix_api.ZabbixUnavailable:
+        pass
     try:
         text = atlas_ai.diagnose(event, diags)
     except atlas_ai.AIUnavailable as e:
