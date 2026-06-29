@@ -1,0 +1,24 @@
+{
+  "//": "Droits partagés du cœur Atlas (RM2079). OPTIONNEL : sans ce fichier, les",
+  "//defaults": "défauts SÛRS intégrés (access.DEFAULT_RIGHTS) s'appliquent. Pour activer",
+  "//enable": "une surcharge : déposer ce fichier en root:root 0644 et pointer",
+  "//env": "ATLAS_RIGHTS_FILE=/opt/atlas/rights.json (core.env). Fichier illisible → fail-closed (défaut).",
+
+  "interfaces": {
+    "atlas-bot":    { "kinds": ["op", "diag", "aidiag", "status", "poll", "resolve"], "op_max_tier": "P2" },
+    "atlas-www":    { "kinds": ["op", "diag", "status", "poll"], "op_max_tier": "P2" },
+    "atlas-cli":    { "kinds": ["op", "diag", "aidiag", "status", "poll", "resolve"], "op_max_tier": "P2" },
+    "atlas-ingest": { "kinds": ["event", "status"], "op_max_tier": "never" }
+  },
+
+  "default": { "kinds": ["status", "poll"], "op_max_tier": "never" },
+
+  "actors": {
+    "//exemple-resserre": "un opérateur junior plafonné aux ops P1 (sûres/réversibles), quel que soit le canal :",
+    "telegram:123456": { "op_max_tier": "P1" },
+    "//exemple-allowlist": "un compte web restreint à une allowlist stricte d'ops :",
+    "www:lecture": { "allow_ops": ["disk-usage", "service-status"] },
+    "//exemple-denylist": "interdire explicitement les redémarrages disruptifs à un acteur :",
+    "cli:stagiaire": { "deny_ops": ["restart-service", "restart-lxc"] }
+  }
+}

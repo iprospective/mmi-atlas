@@ -45,6 +45,7 @@ from policy import POLICY, DEFAULT_DIAGNOSE, DIAG_PROFILES  # noqa: E402
 import atlas_ai                                     # noqa: E402
 import safe_dispatch                                # noqa: E402
 import zabbix_api                                   # noqa: E402
+import access                                       # noqa: E402  (substrat : journal + droits, RM2079)
 
 SOCKET_PATH = os.environ.get("ATLAS_SOCKET", "/run/atlas/atlas.sock")
 SOCKET_GROUP = os.environ.get("ATLAS_SOCKET_GROUP", "atlas-ifaces")
@@ -66,6 +67,10 @@ MAX_REQ = 64 * 1024
 
 CAT = Catalogue(OPERATIONS)
 ENGINE = DecisionEngine(POLICY, ceiling=CEILING, default_diagnose=DEFAULT_DIAGNOSE)
+# Substrat partagé des interfaces (RM2079) : droits (par interface ET acteur) +
+# journal d'accès unifié. Toute requête socket y passe (cf. handle()).
+RIGHTS = access.Rights.load()
+ACCESS = access.AccessLog(os.environ.get("ATLAS_ACCESS_LOG", str(DATA_DIR / "access.jsonl")))
 _LOCK = threading.Lock()          # sérialise tout le chemin événement/décision
 _PENDING = {}                     # token → {"decision": Decision, "ts": float}
 _NOTIFS = []                      # file de notifications à tirer par une interface
@@ -399,7 +404,8 @@ def handle_status(req, uid):
         queued = len(_NOTIFS)
     return {"ok": True, "ceiling": ENGINE.ceiling, "diagnose": DIAGNOSE_ON,
             "rules": len(POLICY), "ops": len(OPERATIONS),
-            "pending": pending, "queued": queued, "approval_ttl": APPROVAL_TTL}
+            "pending": pending, "queued": queued, "approval_ttl": APPROVAL_TTL,
+            "rights": RIGHTS.summary(), "access_log": str(ACCESS.path)}
 
 
 HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve,
@@ -424,13 +430,48 @@ def handle(conn):
             return _reply(conn, {"ok": False, "error": "JSON invalide"})
 
         kind = req.get("kind", "op")  # défaut op = rétro-compat RM2039
+
+        # ── Substrat partagé (RM2079) : identité d'interface (peer-cred) + authz +
+        #    journal d'accès unifié. UN seul point de passage pour les 3 interfaces.
+        interface = access.peer_user(uid)
+        actor = str(req.get("actor", f"uid:{uid}"))
+        op = req.get("op") if isinstance(req.get("op"), str) else None
+        node = req.get("node")
+        if kind == "event" and isinstance(req.get("event"), dict):
+            node = req["event"].get("host")   # un event « cible » un host → loggable
+        args = req.get("args") if isinstance(req.get("args"), list) else []
+
         fn = HANDLERS.get(kind)
         if fn is None:
+            ACCESS.record(iface_uid=uid, interface=interface, actor=actor, kind=kind,
+                          op=op, node=node, args=args, allowed=False,
+                          deny_reason=f"kind inconnu : {kind}")
             return _reply(conn, {"ok": False, "error": f"type de message inconnu : {kind}"})
+
+        # Palier d'autonomie de l'op (gating des droits) — None si op inconnue.
+        autonomy = None
+        if kind == "op" and op is not None:
+            try:
+                autonomy = CAT.get(op).autonomy
+            except ValidationError:
+                autonomy = None
+
+        allowed, reason = RIGHTS.check(interface, actor, kind, op, autonomy)
+        if not allowed:
+            ACCESS.record(iface_uid=uid, interface=interface, actor=actor, kind=kind,
+                          op=op, node=node, args=args, allowed=False, deny_reason=reason)
+            return _reply(conn, {"ok": False, "error": f"refusé (droits) : {reason}"})
+
+        t0 = time.monotonic()
         try:
-            _reply(conn, fn(req, uid))
+            resp = fn(req, uid)
         except ValidationError as e:
-            _reply(conn, {"ok": False, "error": str(e)})
+            resp = {"ok": False, "error": str(e)}
+        ACCESS.record(iface_uid=uid, interface=interface, actor=actor, kind=kind,
+                      op=op, node=node, args=args, allowed=True,
+                      result=access.result_summary(resp),
+                      duration_ms=int((time.monotonic() - t0) * 1000))
+        _reply(conn, resp)
     except Exception as e:  # un client défaillant ne doit pas tuer le daemon
         try:
             _reply(conn, {"ok": False, "error": f"erreur interne: {e}"})
