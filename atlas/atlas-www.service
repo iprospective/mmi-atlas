@@ -1,0 +1,38 @@
+[Unit]
+# Atlas — interface web sysadmin (épic RM1812, RM2040).
+# Déployée dans le conteneur `atlas` sous l'utilisateur dédié non privilégié `atlas-www`.
+Description=Atlas — interface web sysadmin sécurisée
+Documentation=https://gitlab.example.net/iprospective/sysadmin/infrastructure
+After=network-online.target atlas-core.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas-www
+Group=atlas-www
+# Accès au socket du cœur (/run/atlas/atlas.sock, group atlas-ifaces 0660). RM2039.
+SupplementaryGroups=atlas-ifaces
+WorkingDirectory=/opt/atlas
+# Hash mdp / bind / TLS — fichier 0640 root:atlas-www, hors versionning, rempli sur le conteneur.
+EnvironmentFile=/opt/atlas/www.env
+Environment=ATLAS_SOCKET=/run/atlas/atlas.sock
+ExecStart=/usr/bin/python3 -u /opt/atlas/atlas-www.py
+Restart=on-failure
+RestartSec=5
+
+# ── Durcissement (socle ; durcissement agressif = RM1818, avec tests) ──
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# Interface distante (RM2040) : zéro privilège, n'exécute ni n'audite rien (le cœur le
+# fait) → aucun ReadWritePaths. NoNewPrivileges reste true : jamais d'escalade possible.
+
+[Install]
+WantedBy=multi-user.target
