@@ -79,3 +79,9 @@ def submit_diag(node, op="", args=(), *, actor="?", timeout=50):
     """Diagnostic read-only on-target via atlas-safe (RM2050). Op vide → liste les ops."""
     return _request({"kind": "diag", "actor": actor, "node": node,
                      "op": op, "args": list(args)}, timeout)
+
+
+def submit_aidiag(node, profile="", chat_id=None, *, actor="?", timeout=15):
+    """Diagnostic IA MANUEL (RM2072) : ack immédiat, résultat posté plus tard au chat_id."""
+    return _request({"kind": "aidiag", "actor": actor, "node": node,
+                     "profile": profile, "chat_id": chat_id}, timeout)

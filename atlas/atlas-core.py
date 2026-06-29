@@ -125,45 +125,48 @@ def _enqueue_notif(d, token=None, diagnosis=None, extra=None):
         del _NOTIFS[: len(_NOTIFS) - NOTIF_MAX]
 
 
-def _push_ai_notif(host, trigger, text):
-    """Empile une notif de diagnostic IA (depuis un thread → prend le verrou)."""
+def _push_ai_notif(host, trigger, text, to_chat=None):
+    """Empile une notif de diagnostic IA (depuis un thread → prend le verrou).
+    `to_chat` (RM2072) : si défini, le bot la poste à CE chat (diag manuel) au lieu
+    des chats d'alerte (broadcast par défaut)."""
     with _LOCK:
         _NOTIFS.append({"action": "ai-diagnosis", "host": host, "trigger": trigger,
-                        "text": text, "ts": time.time()})
+                        "text": text, "to_chat": to_chat, "ts": time.time()})
         if len(_NOTIFS) > NOTIF_MAX:
             del _NOTIFS[: len(_NOTIFS) - NOTIF_MAX]
 
 
-def _diagnose_async(event, host, trigger, profile):
+def _diagnose_async(event, host, trigger, profile, to_chat=None):
     """Diagnostic IA on-target (RM2050) : dispatch atlas-safe + raisonnement atlas-ai.
 
     Tourne dans un thread (le dispatch SSH + l'appel LLM peuvent durer) → n'empêche
     pas la réponse rapide à l'ingest. Le résultat est posté en notif séparée.
     """
     node = host.split(".")[0]   # FQDN Zabbix (bkp.example.net) → nom court (bkp)
+
+    def push(t):                 # poste le résultat (ciblé si to_chat, sinon broadcast)
+        return _push_ai_notif(host, trigger, t, to_chat=to_chat)
+
     ops = DIAG_PROFILES.get(profile)
     if not ops:
-        return
+        return push(f"⚠️ profil de diagnostic inconnu : {profile}") if to_chat else None
     try:
         diags = safe_dispatch.diagnose_bundle(node, ops)
     except Exception as e:  # noqa: BLE001
-        return _push_ai_notif(host, trigger, f"⚠️ collecte on-target impossible : {e}")
+        return push(f"⚠️ collecte on-target impossible : {e}")
     if not any(d.get("ok") for d in diags):
         # Cause fréquente après un restart de l'agent : clés non chargées → message actionnable.
         if _agent_keyless():
             _push_key_reminder("dispatch distant échoué")
-            return _push_ai_notif(host, trigger,
-                                  "⚠️ diagnostic distant impossible : clés d'orchestration "
-                                  "non chargées (voir le rappel 🔑 ci-dessus).")
+            return push("⚠️ diagnostic distant impossible : clés d'orchestration "
+                        "non chargées (voir le rappel 🔑 ci-dessus).")
         errs = "; ".join(d.get("error", "") for d in diags if d.get("error"))[:200]
-        return _push_ai_notif(host, trigger,
-                              f"⚠️ diagnostic on-target indisponible (atlas-safe sur "
-                              f"« {node} » ?) — {errs}")
+        return push(f"⚠️ diagnostic on-target indisponible (atlas-safe sur « {node} » ?) — {errs}")
     try:
         text = atlas_ai.diagnose(event, diags)
     except atlas_ai.AIUnavailable as e:
-        return _push_ai_notif(host, trigger, f"⚠️ diagnostic IA indisponible : {e}")
-    _push_ai_notif(host, trigger, text)
+        return push(f"⚠️ diagnostic IA indisponible : {e}")
+    push(text)
 
 
 def _maybe_ai_diagnose(d):
@@ -330,6 +333,28 @@ def handle_resolve(req, uid):
                 "op": d.op, "args": d.args, "result": run}
 
 
+def handle_aidiag(req, uid):
+    """Diagnostic IA MANUEL (RM2072) demandé via le bot : lance la chaîne complète
+    (atlas-safe + atlas-ai) EN TÂCHE DE FOND et renvoie le résultat au chat demandeur
+    (`chat_id`), pas au groupe d'alerte. Le bot ne bloque pas (ack immédiat)."""
+    node = req.get("node")
+    profile = req.get("profile") or DEFAULT_AI_PROFILE or "base"
+    to_chat = req.get("chat_id")
+    if not isinstance(node, str) or not node:
+        return {"ok": False, "error": "nœud manquant — usage : /aidiag <nœud> [profil]"}
+    if profile not in DIAG_PROFILES:
+        return {"ok": False, "error": f"profil inconnu : {profile} "
+                f"(dispo : {', '.join(DIAG_PROFILES)})"}
+    node_short = node.split(".")[0]
+    event = {"source": "manual", "host": node_short,
+             "trigger": f"diagnostic manuel ({profile})",
+             "severity": "high", "state": "PROBLEM", "item": ""}
+    threading.Thread(target=_diagnose_async,
+                     args=(event, node_short, event["trigger"], profile),
+                     kwargs={"to_chat": to_chat}, daemon=True).start()
+    return {"ok": True, "node": node_short, "profile": profile}
+
+
 def handle_diag(req, uid):
     """Diagnostic read-only ON-TARGET à la demande (RM2050) : relaie une op `atlas-safe`
     vers un nœud via le dispatch SSH (clé via l'agent). Le cœur tient les clés ; l'appelant
@@ -370,7 +395,8 @@ def handle_status(req, uid):
 
 
 HANDLERS = {"op": handle_op, "event": handle_event, "resolve": handle_resolve,
-            "poll": handle_poll, "status": handle_status, "diag": handle_diag}
+            "poll": handle_poll, "status": handle_status, "diag": handle_diag,
+            "aidiag": handle_aidiag}
 
 
 def handle(conn):

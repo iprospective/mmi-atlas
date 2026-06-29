@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from catalogue import Catalogue, ValidationError  # métadonnées du catalogue (listing) uniquement
 from operations import OPERATIONS
 from atlas_client import (submit, submit_resolve, submit_poll,  # socket du cœur (RM2039/RM1813)
-                          submit_status, submit_diag, CoreUnavailable)
+                          submit_status, submit_diag, submit_aidiag, CoreUnavailable)
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -322,7 +322,9 @@ def poll_and_notify(bot):
         return  # cœur down : on réessaiera au prochain tour (alertes best-effort)
     for n in resp.get("notifs", []):
         text, kbd = format_notif(n)
-        for chat_id in bot["alert_chats"]:
+        # Diag manuel (RM2072) : ciblé sur le demandeur (to_chat) ; sinon broadcast alertes.
+        targets = [n["to_chat"]] if n.get("to_chat") else list(bot["alert_chats"])
+        for chat_id in targets:
             try:
                 if kbd:
                     send_kbd(bot["token"], chat_id, text, kbd)
@@ -410,6 +412,8 @@ HELP = ("<b>Atlas</b> — bot sysadmin sécurisé. Commandes :\n"
         "/ops — liste des opérations du catalogue\n"
         "/diag &lt;nœud&gt; [op] [args…] — diagnostic read-only on-target (flotte+clients) ; "
         "&lt;nœud&gt; seul liste les ops\n"
+        "/aidiag &lt;nœud&gt; [profil] — diagnostic IA à la demande (collecte + LLM), "
+        "résultat ici\n"
         "/run &lt;op&gt; [args…] — exécute une opération (plan action, cœur)\n"
         "(les alertes &amp; approbations du monitoring arrivent automatiquement ; "
         "approuver = tap ✅ sur le bouton, session déverrouillée)\n"
@@ -551,6 +555,26 @@ def handle(bot, msg):
         op = parts[2] if len(parts) > 2 else ""
         dargs = parts[3:]
         _safe(token, chat_id, lambda: cmd_diag(actor, node, op, dargs))
+        return
+
+    if cmd == "/aidiag":
+        if len(parts) < 2:
+            send(token, chat_id, "Usage : <code>/aidiag &lt;nœud&gt; [profil]</code> — "
+                                 "diagnostic <b>IA</b> à la demande (collecte read-only + "
+                                 "raisonnement LLM). Le résultat arrive ici, pas dans le groupe.")
+            return
+        actor = f"telegram:{uid}"
+        node = parts[1]
+        profile = parts[2] if len(parts) > 2 else ""
+
+        def _go():
+            resp = submit_aidiag(node, profile, chat_id, actor=actor)
+            if resp.get("error"):
+                return f"❌ {html.escape(resp['error'])}"
+            return (f"🔎 Diagnostic IA de <b>{html.escape(resp.get('node', node))}</b> "
+                    f"(profil <code>{html.escape(resp.get('profile') or 'base')}</code>) lancé — "
+                    f"résultat ici dans quelques secondes…")
+        _safe(token, chat_id, _go)
         return
 
     send(token, chat_id, "Commande inconnue. /help pour la liste.")
