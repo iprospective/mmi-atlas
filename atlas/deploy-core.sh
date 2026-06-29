@@ -39,7 +39,7 @@ ATLAS_USER=atlas ATLAS_PROD_OPS_DIR=/opt/atlas/ops python3 "$HERE/gen-sudoers.py
 visudo -cf /tmp/atlas-core.sudoers >/dev/null && echo "  ✓ sudoers valide (local)"
 
 # Code cœur + unit, poussés.
-tar czf - -C "$HERE" atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py load-keys.sh | ssh "$PRIMARY" "sudo lxc-attach -n ${CONTAINER} -- tar xzf - -C /opt/atlas"
+tar czf - -C "$HERE" atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py atlas-cli.py catalogue.py operations.py ops load-keys.sh | ssh "$PRIMARY" "sudo lxc-attach -n ${CONTAINER} -- tar xzf - -C /opt/atlas"
 cat "$HERE/atlas-core.service"      | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/etc/systemd/system/atlas-core.service >/dev/null"
 cat "$HERE/atlas-ssh-agent.service" | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/etc/systemd/system/atlas-ssh-agent.service >/dev/null"
 cat /tmp/atlas-core.sudoers    | ssh "$PRIMARY" "sudo tee /zfs/lxc/${CONTAINER}/tmp/atlas-core.sudoers >/dev/null"
@@ -55,9 +55,12 @@ id atlas >/dev/null 2>&1 || useradd --system --home-dir /opt/atlas --no-create-h
 usermod -aG atlas-ifaces atlas
 id atlas-bot >/dev/null 2>&1 && usermod -aG atlas-ifaces atlas-bot || true
 cd /opt/atlas
-chown root:root atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py load-keys.sh
-chmod 0644 atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py
-chmod 0755 load-keys.sh
+chown root:root atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py atlas-cli.py catalogue.py operations.py load-keys.sh
+chmod 0644 atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py redact.py zabbix_api.py access.py catalogue.py operations.py
+chmod 0755 load-keys.sh atlas-cli.py
+chown -R root:root ops; chmod 0755 ops; chmod 0755 ops/*.sh
+# atlas-cli (RM2041) accessible sur le PATH des opérateurs (shell sur le conteneur atlas).
+ln -sf /opt/atlas/atlas-cli.py /usr/local/bin/atlas-cli
 install -d -m 0750 -o atlas -g atlas /opt/atlas/data
 [ -f /opt/atlas/core.env ] && chown root:atlas /opt/atlas/core.env && chmod 0640 /opt/atlas/core.env || true
 rm -rf __pycache__ ops/__pycache__ 2>/dev/null || true
