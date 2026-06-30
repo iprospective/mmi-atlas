@@ -117,5 +117,9 @@ else
   echo "▸ (pas de --ssh-key : authorized_keys non touché ; passe la clé du cœur pour activer le dispatch)"
 fi
 
-echo "✓ atlas-client ${DRY:+(plan) }installé sur $tag."
-[[ "$DRY" = 1 ]] && echo "  → relance sans --dry-run pour appliquer."
+if [[ "$DRY" = 1 ]]; then
+  echo "✓ atlas-client (plan) calculé pour $tag."
+  echo "  → relance sans --dry-run pour appliquer."
+else
+  echo "✓ atlas-client installé sur $tag."
+fi
