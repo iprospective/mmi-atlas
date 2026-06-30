@@ -28,9 +28,13 @@ Config (.env à côté de ce fichier, ou env shell — fichier 0640 root:atlas-w
     ATLAS_WWW_USER            identifiant du compte web (défaut: atlas)
     ATLAS_WWW_PASSWORD_HASH   empreinte PBKDF2 du mdp (cf. --hash-password) — REQUIS
     ATLAS_WWW_BIND            adresse d'écoute (défaut: 127.0.0.1 ; 0.0.0.0 = exposé)
-    ATLAS_WWW_PORT            port HTTPS (défaut: 8443)
-    ATLAS_WWW_CERT            chemin cert TLS PEM (défaut: /opt/atlas/tls/www.crt)
-    ATLAS_WWW_KEY             chemin clé TLS PEM (défaut: /opt/atlas/tls/www.key)
+    ATLAS_WWW_PORT            port d'écoute (défaut: 8443)
+    ATLAS_WWW_TLS             1 = HTTPS in-container (défaut) ; 0 = HTTP simple
+                              (UNIQUEMENT derrière un proxy TLS, ex. Apache SSL)
+    ATLAS_WWW_TRUST_PROXY     1 = derrière un reverse-proxy : IP cliente depuis
+                              X-Forwarded-For + origine CSRF depuis X-Forwarded-Host
+    ATLAS_WWW_CERT            chemin cert TLS PEM (si TLS=1 ; défaut: /opt/atlas/tls/www.crt)
+    ATLAS_WWW_KEY             chemin clé TLS PEM (si TLS=1 ; défaut: /opt/atlas/tls/www.key)
     ATLAS_WWW_SECRET          secret HMAC CSRF (défaut: aléatoire par process)
     ATLAS_SOCKET              socket du cœur (défaut: /run/atlas/atlas.sock)
 
@@ -253,6 +257,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # — utilitaires —
     def _client_ip(self):
+        # Derrière un proxy de confiance : la vraie IP cliente est dans X-Forwarded-For
+        # (sinon toutes les requêtes portent l'IP du proxy → anti-brute-force inopérant).
+        if self.server.atlas.get("trust_proxy"):
+            xff = self.headers.get("X-Forwarded-For")
+            if xff:
+                return xff.split(",")[0].strip()
         return self.client_address[0] if self.client_address else "?"
 
     def log_message(self, fmt, *args):
@@ -308,7 +318,11 @@ class Handler(BaseHTTPRequestHandler):
         """Double barrière CSRF : same-origin (Origin/Referer) + jeton HMAC."""
         cfg = self.server.atlas
         # 1) same-origin : l'Origin/Referer doit pointer sur notre propre Host.
+        #    Derrière un proxy : le Host vu par le browser est dans X-Forwarded-Host
+        #    (Apache avec ProxyPreserveHost Off). Sinon Host suffit (ProxyPreserveHost On).
         host = (self.headers.get("Host") or "").strip()
+        if self.server.atlas.get("trust_proxy"):
+            host = (self.headers.get("X-Forwarded-Host") or host).strip()
         origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
         if origin:
             netloc = urlsplit(origin).netloc
@@ -428,28 +442,38 @@ def main():
     user = os.environ.get("ATLAS_WWW_USER", "atlas")
     bind = os.environ.get("ATLAS_WWW_BIND", "127.0.0.1")
     port = int(os.environ.get("ATLAS_WWW_PORT", "8443"))
+    tls = os.environ.get("ATLAS_WWW_TLS", "1") not in ("0", "false", "no", "")
+    trust_proxy = os.environ.get("ATLAS_WWW_TRUST_PROXY", "0") not in ("0", "false", "no", "")
     cert = os.environ.get("ATLAS_WWW_CERT", "/opt/atlas/tls/www.crt")
     key = os.environ.get("ATLAS_WWW_KEY", "/opt/atlas/tls/www.key")
     secret = os.environ.get("ATLAS_WWW_SECRET") or os.urandom(32).hex()
-    if not (Path(cert).exists() and Path(key).exists()):
-        sys.exit(f"ERREUR : cert/clé TLS introuvables ({cert} / {key}). "
-                 "Le déploiement (deploy-www.sh) en génère un auto-signé.")
+    if tls and not (Path(cert).exists() and Path(key).exists()):
+        sys.exit(f"ERREUR : TLS activé mais cert/clé introuvables ({cert} / {key}). "
+                 "deploy-www.sh en génère un auto-signé, ou mets ATLAS_WWW_TLS=0 "
+                 "(HTTP simple, UNIQUEMENT derrière un proxy TLS).")
 
     cat = Catalogue(OPERATIONS)
     csrf = hmac.new(secret.encode(), b"atlas-www-csrf", hashlib.sha256).hexdigest()
 
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.atlas = {"user": user, "pw_hash": pw_hash, "cat": cat,
-                   "csrf": csrf, "guard": IPGuard()}
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.load_cert_chain(certfile=cert, keyfile=key)
-    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+                   "csrf": csrf, "guard": IPGuard(), "trust_proxy": trust_proxy}
+    if tls:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(certfile=cert, keyfile=key)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
 
+    scheme = "https" if tls else "http"
     exposed = bind not in ("127.0.0.1", "::1", "localhost")
-    print(f"✓ Atlas-www {VERSION} — https://{bind}:{port}/ (user: {user})")
+    print(f"✓ Atlas-www {VERSION} — {scheme}://{bind}:{port}/ (user: {user})")
     print(f"  Catalogue : {len(cat.list())} opération(s) — {', '.join(o.id for o in cat.list())}")
     print(f"  Bind : {bind} {'⚠️ EXPOSÉ (hors loopback)' if exposed else '(loopback — sûr)'}")
+    print(f"  TLS : {'on (HTTPS in-container)' if tls else 'OFF (HTTP simple)'}"
+          f"{' · proxy de confiance (XFF/XFH)' if trust_proxy else ''}")
+    if not tls and exposed and not trust_proxy:
+        print("  ⚠️  HTTP SIMPLE exposé SANS proxy de confiance : l'auth Basic circule EN CLAIR. "
+              "Ne fais ça QUE derrière un proxy qui termine le TLS (bind loopback recommandé).")
     print(f"  Anti-brute-force : {FAIL_THRESHOLD} échecs / lockout {LOCKOUT_SECONDS // 60} min")
     try:
         httpd.serve_forever()

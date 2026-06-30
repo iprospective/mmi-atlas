@@ -31,6 +31,11 @@ ProtectKernelModules=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
+# Autorise le bind direct sur un port privilégié (:80/:443) si ATLAS_WWW_PORT < 1024
+# (le service tourne non-root). Strictement borné à cette seule capacité ; compatible
+# NoNewPrivileges. Inutile derrière un reverse-proxy (bind d'un port haut en loopback).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # Interface distante (RM2040) : zéro privilège, n'exécute ni n'audite rien (le cœur le
 # fait) → aucun ReadWritePaths. NoNewPrivileges reste true : jamais d'escalade possible.
 
