@@ -408,10 +408,18 @@ class Handler(BaseHTTPRequestHandler):
 # ─────────────────────────────────── Main ───────────────────────────────────
 
 def load_dotenv():
-    env_path = Path(__file__).resolve().parent / ".env"
-    if not env_path.exists():
+    """Charge `www.env` (le fichier de CETTE interface) s'il est lisible.
+
+    Sous systemd, EnvironmentFile=/opt/atlas/www.env a déjà tout chargé → pure
+    commodité pour un lancement manuel. On lit `www.env` (jamais `.env`, qui est le
+    secret du bot, root:atlas-bot) et on ignore proprement un fichier absent ou non
+    lisible (ne JAMAIS crasher là-dessus)."""
+    env_path = Path(__file__).resolve().parent / "www.env"
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
         return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
@@ -424,7 +432,7 @@ def gen_password_hash():
         sys.exit("Trop court (10 caractères minimum pour une console privilégiée).")
     if p1 != getpass.getpass("Confirme : "):
         sys.exit("Les deux saisies diffèrent.")
-    print("\nAjoute cette ligne dans .env (le mdp en clair n'est stocké nulle part) :\n")
+    print("\nAjoute cette ligne dans www.env (le mdp en clair n'est stocké nulle part) :\n")
     print(f"ATLAS_WWW_PASSWORD_HASH={hash_password(p1)}")
 
 
