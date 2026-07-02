@@ -44,6 +44,7 @@ from decision import DecisionEngine, Event         # noqa: E402
 from policy import POLICY, DEFAULT_DIAGNOSE, DIAG_PROFILES  # noqa: E402
 import atlas_ai                                     # noqa: E402
 import safe_dispatch                                # noqa: E402
+import client_dispatch                              # noqa: E402  (dispatch d'action distant, RM2092)
 import zabbix_api                                   # noqa: E402
 import access                                       # noqa: E402  (substrat : journal + droits, RM2079)
 
@@ -223,6 +224,9 @@ def _reply(conn, obj):
 # ── Exécution d'une op du catalogue (commun op directe / décision) ───────────
 
 def _run_op(op, args, actor, node=None):
+    # node distant → dispatch d'action vers atlas-client@<node> (RM2092) au lieu du local.
+    if node not in (None, "", "local", "localhost"):
+        return _run_op_remote(op, args, actor, node)
     res = CAT.run(op, [str(a) for a in args], actor=actor, node=node)
     opobj = CAT.get(op)
     return {
@@ -230,6 +234,31 @@ def _run_op(op, args, actor, node=None):
         "stdout": res.stdout, "stderr": res.stderr,
         "decision": getattr(opobj, "autonomy", "?"),
         "duration_ms": res.duration_ms,
+    }
+
+
+def _run_op_remote(op, args, actor, node):
+    """Dispatch d'ACTION vers atlas-client@<node> via SSH command= forcé (RM2092).
+
+    Défense en profondeur : le cœur **re-valide** l'op + les args localement (catalogue)
+    AVANT d'émettre, et le runner distant les **revalide** encore. L'audit est double :
+    access.jsonl côté cœur (qui/quoi/où) + audit.jsonl côté nœud (exécution réelle)."""
+    try:
+        opobj = CAT.get(op)
+        validated = opobj.validate_args([str(a) for a in args])
+    except ValidationError as e:
+        return {"ok": False, "error": str(e), "node": node}
+    try:
+        r = client_dispatch.run_op(node, op, validated, timeout=45)
+    except client_dispatch.DispatchError as e:
+        return {"ok": False, "error": f"dispatch atlas-client@{node} échoué : {e}", "node": node}
+    if r.get("error"):                       # op refusée côté nœud (revalidation)
+        return {"ok": False, "error": r["error"], "node": node, "remote": True}
+    return {
+        "ok": r.get("ok"), "exit": r.get("exit"),
+        "stdout": r.get("stdout", ""), "stderr": r.get("stderr", ""),
+        "decision": getattr(opobj, "autonomy", "?"),
+        "duration_ms": r.get("duration_ms"), "node": node, "remote": True,
     }
 
 

@@ -33,12 +33,15 @@ def _load_registry():
         return {}
 
 
-def resolve(node, registry=None):
-    """Résout un nœud → {user, host, key, proxyjump}. Défaut interne si absent du registre."""
+def resolve(node, registry=None, *, def_user=DEF_USER, def_key=DEF_KEY):
+    """Résout un nœud → {user, host, key, proxyjump}. Défaut interne si absent du registre.
+
+    `def_user`/`def_key` = repli quand ni le nœud ni les `defaults` du registre ne
+    précisent (permet à client_dispatch de viser atlas-client au lieu d'atlas-safe)."""
     reg = registry if registry is not None else _load_registry()
     d = reg.get("defaults", {})
-    user = d.get("user", DEF_USER)
-    key = d.get("key", DEF_KEY)
+    user = d.get("user", def_user)
+    key = d.get("key", def_key)
     domain = d.get("domain", DEF_DOMAIN)
     e = (reg.get("nodes") or {}).get(node, {})
     return {
@@ -52,9 +55,12 @@ def resolve(node, registry=None):
     }
 
 
-def run_op(node, op_id, args=(), *, timeout=30, registry=None):
-    """Exécute une op read-only sur `node` via atlas-safe. Retourne le dict JSON."""
-    r = resolve(node, registry)
+def ssh_json(r, op_id, args=(), *, timeout=30):
+    """Lance `<op_id> [args]` sur la cible résolue `r` (command= forcée) → dict JSON.
+
+    Générique : marche pour atlas-safe (read-only) comme pour atlas-client (action) —
+    seuls user/clé diffèrent, portés par `r`. Lève DispatchError (timeout / non-JSON)."""
+    target = r.get("ssh_alias") or f"{r['user']}@{r['host']}"
     # op_id vide → commande distante vide → le runner liste ses ops (health-check / listing).
     remote = shlex.join([op_id, *[str(a) for a in args]]) if op_id else ""
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
@@ -78,6 +84,11 @@ def run_op(node, op_id, args=(), *, timeout=30, registry=None):
         raise DispatchError(
             f"réponse non-JSON de {target} (rc={p.returncode}): "
             f"{(p.stdout + p.stderr)[:200]}") from e
+
+
+def run_op(node, op_id, args=(), *, timeout=30, registry=None):
+    """Exécute une op read-only sur `node` via atlas-safe. Retourne le dict JSON."""
+    return ssh_json(resolve(node, registry), op_id, args, timeout=timeout)
 
 
 def diagnose_bundle(node, ops, *, timeout=30):
