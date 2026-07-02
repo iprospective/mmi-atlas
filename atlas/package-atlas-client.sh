@@ -83,6 +83,7 @@ chown -R root:root "\$CODE"
 chmod 0755 "\$CODE" "\$CODE/ops" "\$CODE"/ops/*.sh "\$CODE/atlas-cli.py" "\$CODE/atlas-client-runner.py"
 chmod 0644 "\$CODE/catalogue.py" "\$CODE/operations.py"
 install -d -m 0750 -o "\$U" -g "\$U" "\$CODE/data"
+chown -R "\$U:\$U" "\$CODE/data"   # auto-répare l'ownership (audit doit rester writable par l'agent)
 rm -f /tmp/atlas-client-pkg.tgz
 # sudoers (re-validé côté cible avant pose).
 visudo -cf /tmp/atlas-client.sudoers
