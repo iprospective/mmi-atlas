@@ -66,7 +66,9 @@ dpkg -s python3-requests >/dev/null 2>&1 || { apt-get update -qq; apt-get instal
 cd /opt/atlas
 # code + ops → root (RO pour le bot) ; data → bot (writable) ; .env → root:bot 0640
 chown root:root /opt/atlas atlas-bot.py catalogue.py operations.py
-chown -R root:root ops; chmod 0755 /opt/atlas ops; chmod 0644 *.py; chmod 0755 ops/*.sh
+# chmod CIBLÉ (pas *.py : /opt/atlas est partagé — un `chmod 0644 *.py` écrasait le
+# bit +x d'atlas-cli.py, cassant la CLI opérateur après tout redéploiement du bot).
+chown -R root:root ops; chmod 0755 /opt/atlas ops; chmod 0644 atlas-bot.py catalogue.py operations.py; chmod 0755 ops/*.sh
 install -d -m 0750 -o "${BOT_USER:-atlas-bot}" -g "${BOT_USER:-atlas-bot}" /opt/atlas/data
 chown root:"${BOT_USER:-atlas-bot}" /opt/atlas/.env; chmod 0640 /opt/atlas/.env
 rm -rf __pycache__ ops/__pycache__ 2>/dev/null || true
