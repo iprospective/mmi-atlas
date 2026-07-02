@@ -66,6 +66,7 @@ chown -R root:root ops; chmod 0755 ops; chmod 0755 ops/*.sh
 # atlas-cli (RM2041) accessible sur le PATH des opérateurs (shell sur le conteneur atlas).
 ln -sf /opt/atlas/atlas-cli.py /usr/local/bin/atlas-cli
 install -d -m 0750 -o atlas -g atlas /opt/atlas/data
+chown -R atlas:atlas /opt/atlas/data   # audit/état writable par le cœur (auto-répare)
 [ -f /opt/atlas/core.env ] && chown root:atlas /opt/atlas/core.env && chmod 0640 /opt/atlas/core.env || true
 rm -rf __pycache__ ops/__pycache__ 2>/dev/null || true
 # sudoers : cœur IN, bot OUT (le bot ne sudoe plus)
