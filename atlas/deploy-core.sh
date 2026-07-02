@@ -54,6 +54,10 @@ getent group atlas-ifaces >/dev/null || groupadd --system atlas-ifaces
 id atlas >/dev/null 2>&1 || useradd --system --home-dir /opt/atlas --no-create-home --shell /usr/sbin/nologin atlas
 usermod -aG atlas-ifaces atlas
 id atlas-bot >/dev/null 2>&1 && usermod -aG atlas-ifaces atlas-bot || true
+# atlas-cli : opérateur central (RM2041/RM2092) — identité P2 dans les droits partagés,
+# accès socket via atlas-ifaces. `sudo runuser -u atlas-cli -- atlas-cli run …`.
+id atlas-cli >/dev/null 2>&1 || useradd --system --home-dir /opt/atlas --no-create-home --shell /usr/sbin/nologin atlas-cli
+usermod -aG atlas-ifaces atlas-cli
 cd /opt/atlas
 chown root:root atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py client_dispatch.py redact.py zabbix_api.py access.py atlas-cli.py catalogue.py operations.py load-keys.sh
 chmod 0644 atlas-core.py atlas_client.py decision.py policy.py atlas_ai.py safe_dispatch.py client_dispatch.py redact.py zabbix_api.py access.py catalogue.py operations.py
