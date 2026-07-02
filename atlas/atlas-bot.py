@@ -214,22 +214,36 @@ def cmd_ops(cat):
             + "\n\nLancer : <code>/run &lt;op&gt; [args…]</code>")
 
 
-def cmd_run(actor, op_id, args):
+def _extract_node(args):
+    """Retire un éventuel `--node <nœud>` des args → (node|None, args_restants)."""
+    out, node, i = [], None, 0
+    while i < len(args):
+        if args[i] == "--node" and i + 1 < len(args):
+            node = args[i + 1]
+            i += 2
+            continue
+        out.append(args[i])
+        i += 1
+    return node, out
+
+
+def cmd_run(actor, op_id, args, node=None):
     """Soumet l'op au CŒUR Atlas via le socket (RM2039) ; renvoie un message HTML.
 
     Le bot ne valide ni n'exécute plus lui-même (zéro privilège) : il **relaie**
-    l'intention au cœur, qui valide (catalogue), exécute (sudo local ou dispatch
-    SSH RM1813) et audite."""
+    l'intention au cœur, qui valide (catalogue), exécute (sudo local **ou dispatch SSH
+    vers `atlas-client@<node>`, RM2092**) et audite. `node` non nul ⇒ action distante."""
     try:
-        resp = submit(op_id, args, actor=actor)
+        resp = submit(op_id, args, actor=actor, node=node)
     except CoreUnavailable as e:
         return f"❌ cœur Atlas injoignable — {html.escape(str(e))}"
     if resp.get("error"):
         return f"❌ {html.escape(resp['error'])}"
     head = "✅" if resp.get("ok") else f"⚠️ (exit {resp.get('exit')})"
+    tgt = f" @ <code>{html.escape(node)}</code>" if node else ""
     out = _trunc((resp.get("stdout") or resp.get("stderr") or "").rstrip(), 3500)
     body = f"\n<pre>{html.escape(out)}</pre>" if out else ""
-    return f"{head} <b>{html.escape(op_id)}</b> — {resp.get('duration_ms', '?')} ms{body}"
+    return f"{head} <b>{html.escape(op_id)}</b>{tgt} — {resp.get('duration_ms', '?')} ms{body}"
 
 
 # ──────────────────── Notifications du cœur → Telegram (RM1813) ─────────────
@@ -414,7 +428,8 @@ HELP = ("<b>Atlas</b> — bot sysadmin sécurisé. Commandes :\n"
         "&lt;nœud&gt; seul liste les ops\n"
         "/aidiag &lt;nœud&gt; [profil] — diagnostic IA à la demande (collecte + LLM), "
         "résultat ici\n"
-        "/run &lt;op&gt; [args…] — exécute une opération (plan action, cœur)\n"
+        "/run &lt;op&gt; [args…] [--node &lt;nœud&gt;] — exécute une opération : "
+        "local (cœur) ou <b>sur un nœud distant</b> (dispatch atlas-client)\n"
         "(les alertes &amp; approbations du monitoring arrivent automatiquement ; "
         "approuver = tap ✅ sur le bouton, session déverrouillée)\n"
         "/lock — verrouiller\n"
@@ -537,11 +552,12 @@ def handle(bot, msg):
 
     if cmd == "/run":
         if len(parts) < 2:
-            send(token, chat_id, "Usage : <code>/run &lt;op&gt; [args…]</code>. "
+            send(token, chat_id, "Usage : <code>/run &lt;op&gt; [args…] [--node &lt;nœud&gt;]</code>. "
                                  "Liste : /ops")
             return
         actor = f"telegram:{uid}"
-        _safe(token, chat_id, lambda: cmd_run(actor, parts[1], parts[2:]))
+        node, rargs = _extract_node(parts[2:])
+        _safe(token, chat_id, lambda: cmd_run(actor, parts[1], rargs, node))
         return
 
     if cmd == "/diag":

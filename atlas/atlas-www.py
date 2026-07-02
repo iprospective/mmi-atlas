@@ -214,7 +214,9 @@ def ops_section(cat, csrf):
             f"<span class=o>{html.escape(o.id)}</span>"
             f"<span class='tier {o.autonomy}'>{o.autonomy}</span>"
             f"<span class=d>{html.escape(o.description)}</span>"
-            f"{inputs}<button{btn_cls}>exécuter</button></form></div>")
+            f"{inputs}"
+            f"<label>nœud<input type=text name=node autocomplete=off placeholder='local'></label>"
+            f"<button{btn_cls}>exécuter</button></form></div>")
     return "<h2>Opérations du catalogue</h2>" + "".join(rows)
 
 
@@ -377,14 +379,15 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_run(self, form, actor, user):
         op = (form.get("op") or [""])[0]
         args = [a for a in form.get("arg", []) if a != ""]
+        node = (form.get("node") or [""])[0].strip() or None    # vide → local (RM2093)
         if not op:
             self._send(400, page("<div class=card><span class=err>Opération manquante.</span></div>", user=user))
             return
         try:
-            resp = submit(op, args, actor=actor)
+            resp = submit(op, args, actor=actor, node=node)
         except CoreUnavailable as e:
             resp = {"error": f"cœur Atlas injoignable — {e}"}
-        title = f"{op} {' '.join(args)}".strip()
+        title = f"{op} {' '.join(args)}".strip() + (f" @ {node}" if node else "")
         self._send(200, page(result_card(title, resp)
                              + "<p class=note><a href='/'>← retour à la console</a></p>", user=user))
 
