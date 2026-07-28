@@ -2,7 +2,7 @@
 # Atlas — bot Telegram sysadmin sécurisé (épic RM1812, déploiement RM1848).
 # Déployé dans le conteneur `atlas` sous l'utilisateur dédié non privilégié `atlas-bot`.
 Description=Atlas — bot Telegram sysadmin sécurisé
-Documentation=https://gitlab.example.net/iprospective/sysadmin/infrastructure
+Documentation=https://gitlab.example.net/iprospective/sysadmin/atlas
 After=network-online.target
 Wants=network-online.target
 

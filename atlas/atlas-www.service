@@ -2,7 +2,7 @@
 # Atlas — interface web sysadmin (épic RM1812, RM2040).
 # Déployée dans le conteneur `atlas` sous l'utilisateur dédié non privilégié `atlas-www`.
 Description=Atlas — interface web sysadmin sécurisée
-Documentation=https://gitlab.example.net/iprospective/sysadmin/infrastructure
+Documentation=https://gitlab.example.net/iprospective/sysadmin/atlas
 After=network-online.target atlas-core.service
 Wants=network-online.target
 
