@@ -1,0 +1,19 @@
+# Secrets — clés SSH, tokens, mots de passe
+secrets/
+
+# Configs runtime avec tokens/hash (garder les .env.example)
+**/.env
+
+# Caches Python
+__pycache__/
+*.pyc
+
+# Données runtime Atlas (journaux d'audit, etc.)
+atlas/data/
+atlas-safe/data/
+
+# Réglages locaux Claude Code (par poste)
+.claude/settings.local.json
+
+# Lien vers le projet PM (symlink absolu, spécifique au poste)
+.mmi-pm
