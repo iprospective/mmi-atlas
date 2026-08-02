@@ -106,7 +106,7 @@ def cmd_run(args, mode):
             print("✗ --node n'a pas de sens en mode local (runner du nœud courant).", file=sys.stderr)
             return 2
         try:
-            res = CAT.run(op, opargs, actor=ACTOR)
+            res = CAT.run(op, opargs, actor=ACTOR, dry_run=args.dry_run)
         except ValidationError as e:
             print(f"✗ {e}", file=sys.stderr)
             return 2
@@ -118,7 +118,7 @@ def cmd_run(args, mode):
         return 0 if res.ok else 1
     # central
     try:
-        resp = submit(op, opargs, actor=ACTOR, node=args.node)
+        resp = submit(op, opargs, actor=ACTOR, node=args.node, dry_run=args.dry_run)
     except CoreUnavailable as e:
         print(f"✗ cœur Atlas injoignable — {e}", file=sys.stderr)
         return 3
@@ -227,6 +227,8 @@ def build_parser():
     r.add_argument("op")
     r.add_argument("args", nargs="*", default=[])
     r.add_argument("--node", help="nœud cible (central ; dispatch d'action distant = RM2042)")
+    r.add_argument("-n", "--dry-run", action="store_true",
+                   help="op API : décrire l'appel sans l'exécuter (RM2496)")
 
     d = sub.add_parser("diag", help="diagnostic read-only on-target (central)")
     d.add_argument("node")

@@ -94,16 +94,20 @@ class ArgSpec:
 class Operation:
     id: str
     description: str
-    script: Path                   # script vetted à exécuter
+    script: "Path | None" = None   # script shell vetted (ops 'host' / 'lxc' / 'local')
     args: tuple = ()               # tuple[ArgSpec]
     autonomy: str = "P2"           # palier par défaut (cf. RM1813)
-    target: str = "host"           # 'host' | 'lxc' | 'local'
+    target: str = "host"           # 'host' | 'lxc' | 'local' | 'api'
     reversible: bool = True
     needs_sudo: bool = False       # exécuter via `sudo -n <script>`
+    handler: "object | None" = None  # op API : callable(args, dry_run)->dict (target 'api')
 
     def __post_init__(self):
         if self.autonomy not in AUTONOMY_TIERS:
             raise ValueError(f"{self.id}: palier d'autonomie invalide {self.autonomy!r}")
+        # Une op est SOIT un script shell SOIT un handler Python (RM2496) — jamais les deux.
+        if (self.script is None) == (self.handler is None):
+            raise ValueError(f"{self.id}: fournir exactement un de script/handler")
 
     def validate_args(self, raw_args):
         """Valide les arguments positionnels → liste de valeurs sûres (str)."""
@@ -153,10 +157,27 @@ class Catalogue:
         prefix = ["sudo", "-n"] if op.needs_sudo else []
         return prefix + [str(op.script)] + validated
 
-    def run(self, op_id, raw_args=(), *, actor="?", node=None, timeout=DEFAULT_TIMEOUT):
-        """Valide puis exécute une opération. Journalise et retourne un Result."""
+    def run(self, op_id, raw_args=(), *, actor="?", node=None,
+            timeout=DEFAULT_TIMEOUT, dry_run=False):
+        """Valide puis exécute une opération (script shell OU handler API). Journalise.
+
+        `dry_run` ne concerne que les ops à handler (API) : décrire l'appel sans
+        l'exécuter. Sur une op shell, un dry_run est refusé (pas de faux sentiment
+        de sûreté). Le chemin shell reste inchangé (RM2496).
+        """
         op = self.get(op_id)
         validated = op.validate_args(list(raw_args))
+        if op.handler is not None:
+            res = self._run_handler(op, validated, dry_run)
+        else:
+            if dry_run:
+                raise ValidationError(
+                    f"dry-run non supporté pour l'opération shell {op_id!r}")
+            res = self._run_shell(op, validated, node, timeout)
+        self._audit(op, validated, actor, node, res, dry_run=dry_run)
+        return res
+
+    def _run_shell(self, op, validated, node, timeout):
         if node not in (None, "local", "localhost"):
             # Exécution distante = dispatcher SSH du moteur de décision (RM1813).
             raise ValidationError(
@@ -165,24 +186,35 @@ class Catalogue:
         t0 = time.monotonic()
         try:
             proc = self._runner(argv, timeout)
-            res = Result(proc.returncode == 0, proc.returncode,
-                         proc.stdout or "", proc.stderr or "",
-                         int((time.monotonic() - t0) * 1000))
+            return Result(proc.returncode == 0, proc.returncode,
+                          proc.stdout or "", proc.stderr or "",
+                          int((time.monotonic() - t0) * 1000))
         except subprocess.TimeoutExpired:
-            res = Result(False, -1, "", f"timeout après {timeout}s",
-                         int((time.monotonic() - t0) * 1000))
+            return Result(False, -1, "", f"timeout après {timeout}s",
+                          int((time.monotonic() - t0) * 1000))
         except FileNotFoundError:
-            res = Result(False, -1, "", f"script introuvable : {op.script}",
-                         int((time.monotonic() - t0) * 1000))
-        self._audit(op, validated, actor, node, res)
-        return res
+            return Result(False, -1, "", f"script introuvable : {op.script}",
+                          int((time.monotonic() - t0) * 1000))
+
+    @staticmethod
+    def _run_handler(op, validated, dry_run):
+        """Op API (target 'api') : appelle le handler Python — aucun subprocess, aucun
+        sudo. stdout = JSON du retour. Un handler ne doit JAMAIS tuer le cœur."""
+        t0 = time.monotonic()
+        try:
+            data = op.handler(validated, dry_run)
+            return Result(True, 0, json.dumps(data, ensure_ascii=False), "",
+                          int((time.monotonic() - t0) * 1000))
+        except Exception as e:  # noqa: BLE001
+            return Result(False, -1, "", f"{type(e).__name__}: {e}",
+                          int((time.monotonic() - t0) * 1000))
 
     @staticmethod
     def _run_local(argv, timeout):
         return subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, shell=False)
 
-    def _audit(self, op, validated, actor, node, res):
+    def _audit(self, op, validated, actor, node, res, dry_run=False):
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "actor": actor,
@@ -191,6 +223,7 @@ class Catalogue:
             "target": op.target,
             "node": node or "local",
             "needs_sudo": op.needs_sudo,
+            "dry_run": dry_run,
             "exit_code": res.exit_code,
             "ok": res.ok,
             "duration_ms": res.duration_ms,
