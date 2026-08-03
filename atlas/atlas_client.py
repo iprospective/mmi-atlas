@@ -40,13 +40,14 @@ def _request(req, timeout):
         s.close()
 
 
-def submit(op, args=(), *, actor="?", node=None, timeout=60):
+def submit(op, args=(), *, actor="?", node=None, dry_run=False, timeout=60):
     """Soumet une intention (op directe, RM2039) au cœur. Retourne la réponse.
 
-    Lève CoreUnavailable si le socket est injoignable.
+    `dry_run` (RM2496) ne concerne que les ops API à handler : décrire l'appel sans
+    l'exécuter. Lève CoreUnavailable si le socket est injoignable.
     """
     return _request({"kind": "op", "actor": actor, "op": op,
-                     "args": list(args), "node": node}, timeout)
+                     "args": list(args), "node": node, "dry_run": bool(dry_run)}, timeout)
 
 
 def submit_event(event, *, actor="?", timeout=90):
