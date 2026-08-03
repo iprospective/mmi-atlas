@@ -57,6 +57,16 @@ DEFAULT_RIGHTS = {
                          "op_max_tier": "P2"},
         "atlas-ingest": {"kinds": ["event", "status"],
                          "op_max_tier": "never"},
+        # Canal orchestrateur PM/audit (RM2516) : SSH forced-command → orch_runner →
+        # atlas-cli. Défense en profondeur (le wrapper restreint déjà à `ops`/`zbx-*`) :
+        # ici on borne le cœur à la SEULE famille Zabbix, plafond P1 (lecture + actions
+        # sûres). Les P2 zbx (item/trigger-disable, link-template) restent à activer
+        # explicitement (ajouter à allow_ops + op_max_tier P2).
+        "atlas-orch":   {"kinds": ["op", "status", "poll"],
+                         "op_max_tier": "P1",
+                         "allow_ops": ["zbx-host", "zbx-items", "zbx-problems", "zbx-lld",
+                                       "zbx-lld-run", "zbx-ack",
+                                       "zbx-item-enable", "zbx-trigger-enable"]},
     },
     "default": {"kinds": ["status", "poll"], "op_max_tier": "never"},
     "actors": {},
