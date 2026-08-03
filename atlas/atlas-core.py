@@ -223,11 +223,11 @@ def _reply(conn, obj):
 
 # ── Exécution d'une op du catalogue (commun op directe / décision) ───────────
 
-def _run_op(op, args, actor, node=None):
+def _run_op(op, args, actor, node=None, dry_run=False):
     # node distant → dispatch d'action vers atlas-client@<node> (RM2092) au lieu du local.
     if node not in (None, "", "local", "localhost"):
         return _run_op_remote(op, args, actor, node)
-    res = CAT.run(op, [str(a) for a in args], actor=actor, node=node)
+    res = CAT.run(op, [str(a) for a in args], actor=actor, node=node, dry_run=dry_run)
     opobj = CAT.get(op)
     return {
         "ok": res.ok, "exit": res.exit_code,
@@ -298,9 +298,10 @@ def _run_diagnostics(plan, actor):
 def handle_op(req, uid):
     op, args, node = req.get("op"), req.get("args", []), req.get("node")
     actor = str(req.get("actor", f"uid:{uid}"))
+    dry_run = bool(req.get("dry_run", False))
     if not isinstance(op, str) or not isinstance(args, list):
         return {"ok": False, "error": "champs op/args invalides"}
-    return _run_op(op, args, actor=f"{actor} via iface-uid:{uid}", node=node)
+    return _run_op(op, args, actor=f"{actor} via iface-uid:{uid}", node=node, dry_run=dry_run)
 
 
 def handle_event(req, uid):

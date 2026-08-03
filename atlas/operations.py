@@ -16,6 +16,7 @@ Paliers d'autonomie (cf. RM1813) :
 """
 from catalogue import (ArgSpec, Operation, OPS_DIR,
                        RE_SERVICE, RE_CONTAINER, RE_ZFS_DATASET, RE_LABEL)
+from zabbix_ops import ZABBIX_OPERATIONS  # ops API Zabbix (RM2496) — target 'api'
 
 OPERATIONS = (
     # ── Référence read-only (RM1816) ────────────────────────────────────────
@@ -69,4 +70,4 @@ OPERATIONS = (
         autonomy="P0",            # lecture seule
         target="host", reversible=True, needs_sudo=True,
     ),
-)
+) + ZABBIX_OPERATIONS
