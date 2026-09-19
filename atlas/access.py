@@ -66,7 +66,9 @@ DEFAULT_RIGHTS = {
                          "op_max_tier": "P1",
                          "allow_ops": ["zbx-host", "zbx-items", "zbx-problems", "zbx-lld",
                                        "zbx-lld-run", "zbx-ack",
-                                       "zbx-item-enable", "zbx-trigger-enable"]},
+                                       "zbx-item-enable", "zbx-trigger-enable",
+                                       # point de restauration pré-MEP (RM3254)
+                                       "svc-status", "svc-snapshot"]},
     },
     "default": {"kinds": ["status", "poll"], "op_max_tier": "never"},
     "actors": {},

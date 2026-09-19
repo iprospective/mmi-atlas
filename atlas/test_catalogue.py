@@ -91,5 +91,17 @@ check("sudoers : aucune op read-only (disk-usage absent)", "disk-usage.sh" not i
 check("sudoers : chemin prod /opt/atlas/ops",
       "/opt/atlas/ops/restart-service.sh" in sudoers)
 
+# ── RM3254 : ops opensvc de point de restauration pré-MEP ───────────────────
+check("svc-status palier P0", ops["svc-status"].autonomy == "P0")
+check("svc-snapshot palier P1", ops["svc-snapshot"].autonomy == "P1")
+check("svc-snapshot accepte svc + rid de la liste blanche",
+      ops["svc-snapshot"].validate_args(["example", "sync#root_hour"]) == ["example", "sync#root_hour"])
+expect_reject("svc-snapshot rejette un rid hors liste (sync#all)",
+              lambda: ops["svc-snapshot"].validate_args(["example", "sync#all"]))
+expect_reject("svc-snapshot exige le rid", lambda: ops["svc-snapshot"].validate_args(["example"]))
+expect_reject("svc-status rejette un nom de service avec espace/;",
+              lambda: ops["svc-status"].validate_args(["example;reboot"]))
+check("sudoers : svc-snapshot.sh présent", "/opt/atlas/ops/svc-snapshot.sh" in sudoers)
+
 print("ÉCHEC" if FAILED else "TOUS LES TESTS PASSENT")
 sys.exit(1 if FAILED else 0)

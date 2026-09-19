@@ -15,7 +15,8 @@ Paliers d'autonomie (cf. RM1813) :
   P0 lecture seule · P1 sûr/idempotent/réversible · P2 disruptif (approbation).
 """
 from catalogue import (ArgSpec, Operation, OPS_DIR,
-                       RE_SERVICE, RE_CONTAINER, RE_ZFS_DATASET, RE_LABEL)
+                       RE_SERVICE, RE_CONTAINER, RE_ZFS_DATASET, RE_LABEL,
+                       SYNC_RIDS)
 from zabbix_ops import ZABBIX_OPERATIONS  # ops API Zabbix (RM2496) — target 'api'
 
 OPERATIONS = (
@@ -59,6 +60,24 @@ OPERATIONS = (
         script=OPS_DIR / "restart-lxc.sh",
         args=(ArgSpec("container", "token", pattern=RE_CONTAINER),),
         autonomy="P2",            # disruptif → approbation (RM1813)
+        target="host", reversible=True, needs_sudo=True,
+    ),
+    # ── Point de restauration pré-MEP via opensvc (RM3254, pour pm-snapshot RM2989) ──
+    Operation(
+        id="svc-status",
+        description="État de l'instance locale d'un service opensvc (up/down/absent)",
+        script=OPS_DIR / "svc-status.sh",
+        args=(ArgSpec("svc", "token", pattern=RE_CONTAINER),),
+        autonomy="P0",            # lecture seule (om exige root → sudo)
+        target="host", reversible=True, needs_sudo=True,
+    ),
+    Operation(
+        id="svc-snapshot",
+        description="Snapshot pré-MEP : om <svc> sync update --rid <rid> (instance up requise)",
+        script=OPS_DIR / "svc-snapshot.sh",
+        args=(ArgSpec("svc", "token", pattern=RE_CONTAINER),
+              ArgSpec("rid", "choice", choices=SYNC_RIDS)),
+        autonomy="P1",            # additif, réversible (rétention de la ressource)
         target="host", reversible=True, needs_sudo=True,
     ),
     Operation(
