@@ -41,6 +41,8 @@ RE_SERVICE = re.compile(r"^[A-Za-z0-9@._-]{1,64}$")          # unité systemd / 
 RE_CONTAINER = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")     # nom de conteneur LXC
 RE_ZFS_DATASET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,80}$")  # dataset (sans @)
 RE_LABEL = re.compile(r"^[A-Za-z0-9_-]{1,32}$")             # libellé de snapshot
+# Ressources opensvc de snapshot ZFS que svc-snapshot peut déclencher (RM3254).
+SYNC_RIDS = ("sync#root_hour", "sync#root_day", "sync#root_week")
 
 
 class ValidationError(ValueError):

@@ -36,6 +36,12 @@ python3 test_catalogue.py          # auto-tests (validation, anti-injection, aud
 | `zfs-snapshot` | P1 | oui | snapshot ZFS d'un dataset (rollback) |
 | `restart-service` | P2 | oui | redémarre un service / pool FPM |
 | `restart-lxc` | P2 | oui | redémarre un conteneur LXC (via opensvc) |
+| `svc-status` | P0 | oui | état de l'instance locale d'un service opensvc (up/down/absent) — RM3254 |
+| `svc-snapshot` | P1 | oui | point de restauration pré-MEP : `om <svc> sync update --rid sync#root_*`, instance `up` exigée, rend le nom du snapshot — RM3254 |
+
+`svc-status` et `svc-snapshot` sont aussi ouvertes au **canal orchestrateur**
+(`orch_runner.py`, clé `atlas-orch`) avec `--node <nœud>` : c'est ainsi que l'outil PM
+`pm-snapshot` (RM2989) prend le snapshot pré-MEP sans aucun accès hôte côté PM (D3, RM2421).
 
 Les opérations privilégiées (`needs_sudo`) tournent via le user `atlas` avec une
 ligne sudoers **ciblée par script**, **générée depuis le registre** (jamais à la

@@ -9,7 +9,8 @@ blanche**, puis on relaie à `atlas-cli` — le catalogue reste la frontière (v
 op + args + palier + audit).
 
 Format attendu de SSH_ORIGINAL_COMMAND : "atlas <base64(json_list_of_args)>".
-Liste blanche : `ops` ; `run zbx-*` (+ flags). Tout le reste est refusé (pas de shell).
+Liste blanche : `ops` ; `run zbx-*` ; `run svc-status|svc-snapshot` (RM3254, point de
+restauration pré-MEP) ; flags `--dry-run` et `--node <nœud>`. Tout le reste est refusé.
 """
 import base64
 import json
@@ -18,7 +19,9 @@ import re
 import sys
 
 ATLAS_CLI = "/opt/atlas/atlas-cli.py"
-OP_RE = re.compile(r"^zbx-[a-z0-9-]+$")          # ce canal ne pilote QUE les ops Zabbix
+OP_RE = re.compile(r"^(zbx-[a-z0-9-]+|svc-status|svc-snapshot)$")   # ops Zabbix + pré-MEP
+NODE_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,62}$")
+FLAGS = {"--dry-run", "-n"}                      # flags sans valeur admis
 
 
 def _die(msg, code=2):
@@ -39,14 +42,37 @@ def parse(raw):
     return argv
 
 
+def run_op_of(args):
+    """Op visée par `run …` : premier argument positionnel, la VALEUR de `--node` sautée.
+
+    Sans ce saut, `run --node node5 svc-status x` désignerait « node5 » comme op. Un flag
+    inconnu ou un `--node` malformé est refusé : ce canal n'accepte que ce qu'il connaît."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--node" or a.startswith("--node="):
+            val = args[i + 1] if a == "--node" and i + 1 < len(args) else a.partition("=")[2]
+            if not NODE_RE.match(val or ""):
+                _die(f"--node invalide: {val!r}")
+            i += 2 if a == "--node" else 1
+            continue
+        if a.startswith("-"):
+            if a not in FLAGS:
+                _die(f"option non autorisée via ce canal: {a!r}")
+            i += 1
+            continue
+        return a
+    return ""
+
+
 def authorize(argv):
     sub = argv[0]
     if sub == "ops":
         return
     if sub == "run":
-        op = next((a for a in argv[1:] if not a.startswith("-")), "")
+        op = run_op_of(argv[1:])
         if not OP_RE.match(op):
-            _die(f"op non autorisée via ce canal: {op!r} (seules les ops zbx-*)")
+            _die(f"op non autorisée via ce canal: {op!r} (ops zbx-*, svc-status, svc-snapshot)")
         return
     _die(f"sous-commande non autorisée: {sub!r} (ops|run)")
 
