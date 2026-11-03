@@ -1,77 +1,116 @@
-# Atlas — bot Telegram sysadmin sécurisé
+# Atlas — agent de déploiement et d’administration limitée
 
-Télécommande Telegram pour des opérations sysadmin privilégiées, avec sécurité
-forte (whitelist + verrou applicatif TTL). Voir RM1812 (épic) et ses sous-tickets.
+Atlas est le composant de l’écosystème iProspective chargé des **déploiements**
+et des **opérations d’administration** sur les serveurs. Il ne dispose pas d’un
+accès root général : il agit via un utilisateur dédié, un catalogue d’opérations
+vetted et des droits sudoers ciblés.
 
-## État
+Le bot Telegram reste une interface parmi d’autres ; le cœur Atlas expose aussi
+un canal orchestrateur utilisé par Karl/PM pour les snapshots pré-MEP.
 
-- **RM1814 — squelette bot** (`atlas-bot.py`) : long-polling, whitelist, verrou
-  PBKDF2 TTL, anti-brute-force, fail-secure. Branché sur le catalogue (`/ops`, `/run`).
-- **RM1816 — catalogue de scripts vetted** (`catalogue.py` + `operations.py` +
-  `ops/`) : registre déclaratif, validation stricte des arguments (liste
-  blanche / motif / bornes, anti-injection), exécution en argv (jamais de shell),
-  journal d'audit JSONL. Auto-tests : `python3 test_catalogue.py`.
-- **RM1815 — provisioning** du user `atlas` + sudoers + clé SSH sur le parc, via
-  `provision-atlas.sh` (script idempotent ; l'outil de config management —
-  Puppet/Ansible/alt. — est arbitré dans RM1118).
+## Rôle
 
-## Catalogue d'opérations
+- exécuter des déploiements et des opérations d’exploitation ;
+- fournir un point d’entrée contrôlé vers les serveurs ;
+- conserver un journal d’audit des actions ;
+- exposer aux outils de l’écosystème (Karl/PM, supervision) des opérations
+  limitées et réversibles.
+
+## Modèle de sécurité
+
+- **Utilisateur système dédié** : `atlas`, sans shell interactif général.
+- **Sudoers généré depuis le registre** : une ligne par script autorisé, jamais
+  une règle globale.
+- **Catalogue fermé** : aucune commande arbitraire ; les arguments sont validés
+  avant exécution et jamais interpolés dans un shell.
+- **Moindre privilège** : les opérations sont classées P0/P1/P2 ; les plus
+  sensibles exigent une confirmation ou un canal spécifique.
+- **Audit** : journal JSONL des actions, des acteurs et des résultats.
+- **Pas de secrets dans le dépôt** : les tokens, clés SSH et mots de passe sont
+  fournis par l’environnement ou Vaultwarden.
+
+## Composants
+
+| Composant | Rôle |
+|---|---|
+| `atlas-core.py` | cœur d’exécution, catalogue et politique |
+| `atlas-bot.py` | interface Telegram, whitelist et verrou TTL |
+| `atlas-ingest.py` | ingestion d’événements de supervision |
+| `atlas-www.py` | interface web read-only/relais |
+| `atlas-cli.py` | CLI opérateur |
+| `atlas_client.py`, `atlas-client-runner.py` | exécution côté cible |
+| `orch_runner.py`, `orch-client.sh` | canal orchestrateur pour Karl/PM |
+| `catalogue.py`, `operations.py`, `ops/` | registre et scripts vetted |
+
+## Catalogue d’opérations
 
 Une opération = un script vetted dans `ops/` + une entrée déclarative dans
-`operations.py` (id, description, schéma d'arguments, palier d'autonomie, cible,
-réversibilité, `needs_sudo`). Le framework (`catalogue.py`) **valide chaque
-argument avant exécution** et **n'interpole jamais** dans un shell.
+`operations.py` : identifiant, description, schéma d’arguments, palier
+d’autonomie, cible, réversibilité et `needs_sudo`.
 
 ```bash
-python3 test_catalogue.py          # auto-tests (validation, anti-injection, audit)
+python3 test_catalogue.py          # validation, anti-injection, audit
 ```
-
-**Opérations disponibles**
 
 | id | palier | sudo | description |
 |----|--------|------|-------------|
-| `disk-usage` | P0 | non | `df -h` (réf. RM1816) |
-| `service-status` | P0 | non | état d'un service systemd (réf. RM1816) |
-| `tail-log` | P0 | oui | fin d'un log système (liste blanche) |
-| `zfs-snapshot` | P1 | oui | snapshot ZFS d'un dataset (rollback) |
-| `restart-service` | P2 | oui | redémarre un service / pool FPM |
-| `restart-lxc` | P2 | oui | redémarre un conteneur LXC (via opensvc) |
-| `svc-status` | P0 | oui | état de l'instance locale d'un service opensvc (up/down/absent) — RM3254 |
-| `svc-snapshot` | P1 | oui | point de restauration pré-MEP : `om <svc> sync update --rid sync#root_*`, instance `up` exigée, rend le nom du snapshot — RM3254 |
+| `disk-usage` | P0 | non | espace disque |
+| `service-status` | P0 | non | état d’un service systemd |
+| `tail-log` | P0 | oui | fin d’un log système, liste blanche |
+| `zfs-snapshot` | P1 | oui | snapshot ZFS d’un dataset |
+| `restart-service` | P2 | oui | redémarrage d’un service ou pool FPM |
+| `restart-lxc` | P2 | oui | redémarrage d’un conteneur LXC via OpenSVC |
+| `svc-status` | P0 | oui | état d’une instance OpenSVC |
+| `svc-snapshot` | P1 | oui | point de restauration pré-MEP via OpenSVC |
 
-`svc-status` et `svc-snapshot` sont aussi ouvertes au **canal orchestrateur**
-(`orch_runner.py`, clé `atlas-orch`) avec `--node <nœud>` : c'est ainsi que l'outil PM
-`pm-snapshot` (RM2989) prend le snapshot pré-MEP sans aucun accès hôte côté PM (D3, RM2421).
+`svc-status` et `svc-snapshot` sont aussi accessibles au canal orchestrateur
+(`orch_runner.py`, clé dédiée) avec `--node <nœud>`. C’est le mécanisme utilisé
+par Karl/PM pour prendre un snapshot pré-MEP sans accès hôte côté PM.
 
-Les opérations privilégiées (`needs_sudo`) tournent via le user `atlas` avec une
-ligne sudoers **ciblée par script**, **générée depuis le registre** (jamais à la
-main) :
+## Déploiement
 
 ```bash
-python3 gen-sudoers.py            # → /etc/sudoers.d/atlas (depuis operations.py)
-./deploy-atlas.sh <ssh-node>      # déploie ops/ → /opt/atlas/ops + installe le sudoers (visudo -c)
+python3 gen-sudoers.py                  # génère le sudoers depuis operations.py
+./deploy-atlas.sh <node>                # ops + sudoers sur un hôte
+./deploy-atlas.sh <node> --lxc <name>   # ops + sudoers dans un conteneur
 ```
 
-Sur un nœud déployé, pointer le catalogue vers les scripts installés via
-`ATLAS_OPS_DIR=/opt/atlas/ops`. Audit : `scripts/atlas/data/audit.jsonl`
-(gitignoré ; `$ATLAS_AUDIT_PATH` pour surcharger).
+Les scripts de déploiement sont idempotents et vérifient le sudoers avec
+`visudo -c`. Les noms de nœuds et les chemins de clés sont fournis par la
+configuration locale, jamais codés en dur dans le dépôt public.
 
-> À venir : `set-lxc-ram` (lié à la limite RAM RM1797, mécanisme cgroup/lxcfs à
-> stabiliser) ; exécution **distante** des ops via dispatcher SSH (RM1813).
+## Configuration
 
-## Démarrer le bot (dev)
+Copier les fichiers d’exemple et renseigner les valeurs hors dépôt :
 
 ```bash
-cp .env.example .env            # puis renseigner le token + whitelist
-python3 atlas-bot.py --hash-password   # génère ATLAS_LOCK_PASSWORD_HASH → .env
-python3 atlas-bot.py
+cp .env.example .env
+cp nodes.json.example nodes.json
+cp rights.json.example rights.json
 ```
 
-## Sécurité
+Les fichiers `.env`, `nodes.json`, `rights.json` et les journaux d’audit ne
+doivent jamais être versionnés.
 
-- **Facteur 1** : whitelist d'IDs Telegram (`ATLAS_WHITELIST`).
-- **Facteur 2** : verrou applicatif. Empreinte PBKDF2 (mdp jamais en clair),
-  `/unlock` effacé de l'historique, auto-lock court (défaut 120 s vu le sudo),
-  lockout après 3 échecs, état en mémoire → **fail-secure** au redémarrage.
-- Le bot n'exécute **jamais** de commande arbitraire : seulement les opérations
-  du catalogue vetted (RM1816), via le user `atlas` aux droits sudo ciblés.
+## Tests
+
+```bash
+python3 test_catalogue.py
+python3 test_access.py
+python3 test_dispatch.py
+python3 test_orch_runner.py
+python3 test_zabbix.py
+```
+
+## Intégration écosystème
+
+- **Karl/PM** : pilotage des tâches et des environnements ; utilise le canal
+  orchestrateur pour les snapshots et certaines opérations.
+- **Supervision** : ingestion d’événements et opérations Zabbix contrôlées.
+- **Vaultwarden** : secrets et identifiants hors dépôt.
+- **GitLab/GitHub** : code source ; les détails d’exploitation restent dans les
+  documents privés.
+
+## Licence
+
+GPL-3.0-or-later — voir `LICENSE`.

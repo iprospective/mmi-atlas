@@ -1,9 +1,13 @@
-# Atlas — agent IA sysadmin
+# Atlas — agent de déploiement et d’administration limitée
 
 **Atlas** est l'**agent compétent** de l'infrastructure iProspective : il détient le
 plan d'accès aux hôtes (SSH, clés, policy, dispatch sécurisé, redaction, audit-trail)
 **et** le tooling d'analyse (observe / corrèle / diagnostique / agit). C'est le seul
 composant autorisé à se connecter aux machines et à y exécuter des opérations.
+
+Atlas dispose de **droits d'administration limités** : il agit via un utilisateur
+dédié et un sudoers ciblé, jamais via un accès root général. Le détail du modèle
+de sécurité est dans [`atlas/README.md`](atlas/README.md).
 
 Extrait du monorepo `iprospective/sysadmin/infrastructure` (RM2421) pour lui donner sa
 propre frontière de sécurité, son cycle de release et en faire un **service réutilisable**
@@ -16,8 +20,8 @@ Découpage en 3 rôles, graphe **acyclique** — *savoir → agent compétent �
 - **`iprospective/sysadmin/infrastructure` = le SAVOIR** (ne dépend de personne) :
   déclaratif (`inventory/`, source de vérité des nœuds) + définitions d'observation
   (`scripts/discovery/` = code + *contrat* des sondes). Ne se connecte **jamais** à un
-  hôte, ne fait **aucune** analyse. Il y a **N infra clientes** (`client-b/infra`,
-  `client-a/infra`, … et `iprospective` = un client comme un autre), chacune détient
+  hôte, ne fait **aucune** analyse. Il y a **N infra clientes** (`<client-a>/infra`,
+  `<client-b>/infra`, … et `iprospective` = un client comme un autre), chacune détient
   *son* inventaire.
 - **`iprospective/sysadmin/atlas` = l'AGENT COMPÉTENT** (ce repo, dépend d'infra) :
   accès hôte + tooling d'analyse. **Exécute** les sondes (elles sont des opérations
@@ -36,7 +40,7 @@ organisationnel* (droit d'auditer un périmètre) → **audit**.
 |---|---|---|
 | `inventory/` | déclaratif, source de vérité nœuds | dérive `nodes.json` |
 | `scripts/discovery/` (sondes) | contrat de sortie versionné | atlas les **exécute** |
-| Zabbix (`zabbix-host` + endpoint) | flux événements/contexte | ingest + `zabbix_api.py` |
+| Zabbix (`<zabbix-host>` + endpoint) | flux événements/contexte | ingest + `zabbix_api.py` |
 
 ## Composants
 
@@ -67,8 +71,17 @@ L'agent tourne dans un conteneur LXC dédié ; le code est déployé dans `/opt/
 (root-owned) via les `deploy-*.sh` (tar → `lxc-attach`). Le runtime est **découplé** du
 repo : déplacer les sources ne perturbe pas l'agent vivant tant qu'on ne redéploie pas.
 
+## Dépôt public
+
+- GitHub : <https://github.com/iprospective/mmi-atlas>
+- Source de développement : GitLab interne.
+
 ## Provenance
 
 Historique git préservé (`git filter-repo` sur `scripts/atlas` + `scripts/atlas-safe`,
 remontés à la racine) — RM2421, 2026-07-28. Série de tickets d'origine : RM1812-1818,
 1848, 2039-2042, 2050, 2058, 2071-2072, 2079, 2092-2094 (migrés vers le projet PM atlas).
+
+## Licence
+
+GPL-3.0-or-later — voir [`LICENSE`](LICENSE).
